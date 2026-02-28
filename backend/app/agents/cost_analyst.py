@@ -3,9 +3,9 @@ Node 5 -- The COST ANALYST (Financial)
 "No-surprises" auditor: scrapes true cost and compares to Snowflake history.
 
 Scraping Strategy:
-  1. Firecrawl /map  -> discover "Pricing" / "Menu" page on venue website
-  2. Jina Reader      -> fetch "General Info" pages (free, zero-config fallback)
-  3. Firecrawl /scrape -> extract structured pricing via Pydantic schema
+  1. Firecrawl /map    -> discover "Pricing" / "Menu" page on venue website
+  2. Firecrawl /scrape -> extract page content as markdown
+  3. Gemini            -> extract structured pricing from content
 
 Fallback Tiers:
   - Confirmed pricing  -> value_score from Gemini assessment
@@ -96,6 +96,7 @@ async def _firecrawl_scrape(page_url: str) -> Optional[str]:
     except httpx.HTTPError as exc:
         logger.warning("Firecrawl /scrape failed for %s: %s", page_url, exc)
         return None
+
 
 
 # -- Pricing extraction via Gemini --------------------------------------
@@ -228,11 +229,11 @@ async def _analyze_venue_cost(venue: dict, group_size: int) -> dict:
     """
     Full cost pipeline for a single venue:
     1. Try Firecrawl /map to find pricing pages
-    2. Try Firecrawl /scrape or Jina Reader to get content
+    2. Firecrawl /scrape to get page content
     3. Use Gemini to extract structured pricing
     """
     website = venue.get("website", "")
-    content = ""
+    combined_content = ""
 
     if website:
         # Step 1: Discover pricing pages
@@ -242,24 +243,14 @@ async def _analyze_venue_cost(venue: dict, group_size: int) -> dict:
         pages_to_scrape = pricing_pages[:3]
         if website not in pages_to_scrape:
             pages_to_scrape.append(website)
-            
+
         content_parts = []
         for target in pages_to_scrape:
             content = await _firecrawl_scrape(target) or ""
-            if not content:
-                content = await _jina_read(target) or ""
             if content:
                 content_parts.append(f"--- Content from {target} ---\n{content}\n")
-        
-        combined_content = "\n".join(content_parts)
 
-    if not combined_content:
-        # Last resort: use Jina on the website root
-        fallback_url = website
-        if fallback_url:
-            content = await _jina_read(fallback_url) or ""
-            if content:
-                 combined_content = f"--- Content from {fallback_url} ---\n{content}\n"
+        combined_content = "\n".join(content_parts)
 
     if not combined_content:
         return _no_data_fallback(venue)
@@ -276,7 +267,7 @@ def cost_analyst_node(state: PathfinderState) -> PathfinderState:
 
     Steps
     -----
-    1. For each venue, run the Firecrawl -> Jina -> Gemini pipeline.
+    1. For each venue, run the Firecrawl -> Gemini pipeline.
     2. Write cost_profiles dict to state.
     """
     candidates = state.get("candidate_venues", [])
@@ -285,13 +276,16 @@ def cost_analyst_node(state: PathfinderState) -> PathfinderState:
 
     if not candidates:
         logger.info("Cost Analyst: no candidates to analyze")
-        state["cost_profiles"] = {}
-        return state
+        return {"cost_profiles": {}}
 
     async def _analyze_all():
         return await asyncio.gather(*[_analyze_venue_cost(v, group_size) for v in candidates])
 
     try:
+        results = asyncio.run(_analyze_all())
+    except RuntimeError:
+        import nest_asyncio
+        nest_asyncio.apply()
         results = asyncio.run(_analyze_all())
     except Exception as exc:
         logger.error("Cost Analyst failed: %s", exc)
@@ -305,5 +299,4 @@ def cost_analyst_node(state: PathfinderState) -> PathfinderState:
     scored = sum(1 for v in cost_profiles.values() if v.get("base_cost", 0) > 0)
     logger.info("Cost Analyst priced %d/%d venues", scored, len(candidates))
 
-    state["cost_profiles"] = cost_profiles
-    return state
+    return {"cost_profiles": cost_profiles}

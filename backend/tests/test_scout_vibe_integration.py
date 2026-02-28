@@ -36,7 +36,7 @@ class TestScoutVibeIntegration:
             "vibe_scores": {},
         }
 
-        state = scout_node(state)
+        state.update(scout_node(state))
 
         candidates = state.get("candidate_venues", [])
         assert len(candidates) > 0, "Scout must find at least 1 venue for this test"
@@ -46,7 +46,7 @@ class TestScoutVibeIntegration:
             print(f"   [{v['source']}] {v['name']}")
 
         # Step 2: Run Vibe Matcher on Scout's output (same state object)
-        state = vibe_matcher_node(state)
+        state.update(vibe_matcher_node(state))
 
         scores = state.get("vibe_scores", {})
 

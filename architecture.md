@@ -22,6 +22,11 @@ The system is built around a multi-agent LangGraph workflow, coordinated by a ce
 
 ### Node 1: The COMMANDER (Orchestrator Node)
 
+**Status:** ✅ Implemented
+- **Intent Parsing:** Uses Gemini 1.5 Flash to extract JSON intent (`activity`, `group_size`, `budget`, etc.).
+- **Complexity Tiering:** Maps queries to `tier_1`, `tier_2`, or `tier_3` and assigns active agents and weights based on the tier.
+- **Snowflake Pre-Check:** Integrates with `SnowflakeService.cortex_search()` to inject historical risk context.
+
 **Role:** Central brain and LangGraph Supervisor.
 **Model:** Gemini 1.5 Flash
 **Never calls external APIs directly.**
@@ -89,6 +94,11 @@ A fully weighted execution plan passed into LangGraph.
 
 ### Node 2: The SCOUT (Discovery Node)
 
+**Status:** ✅ Implemented
+- **Dual-API Discovery:** Queries Google Places and Yelp Fusion concurrently via `asyncio.gather()`.
+- **Deduplication:** Merges results by normalized name to avoid duplicate venues across sources.
+- **Structured Output:** Returns up to 10 enriched candidates with coordinates, ratings, photos, and category metadata.
+
 **Role:** The system's "eyes."
 **Tools:** Google Places API, Yelp Fusion
 
@@ -136,6 +146,11 @@ A shortlist of enriched candidate venues.
 
 ### Node 3: The VIBE MATCHER (Qualitative Node)
 
+**Status:** ✅ Implemented
+- **Multimodal Scoring:** Sends venue photos + metadata to Gemini for aesthetic analysis.
+- **Concurrent Processing:** Scores all candidates in parallel via `asyncio.gather()`.
+- **Graceful Fallback:** Venues that fail scoring get a neutral `score: null, confidence: 0.0` entry instead of crashing.
+
 **Role:** Aesthetic and subjective reasoning engine.
 **Model:** Gemini 1.5 Pro (Multimodal)
 
@@ -178,6 +193,8 @@ A normalized Vibe Score per venue + qualitative descriptors.
 ---
 
 ### Node 4: The ACCESS ANALYST (Logistics Node)
+
+**Status:** ⬜ Not Yet Implemented (stub — returns empty scores)
 
 **Role:** Spatial reality check.
 **Tools:**
@@ -222,6 +239,11 @@ Accessibility scores + map-ready spatial data.
 
 ### Node 5: The COST ANALYST (Financial Node)
 
+**Status:** ✅ Implemented
+- **Firecrawl Pipeline:** Uses `/map` to discover pricing pages, `/scrape` to extract content as markdown.
+- **Gemini Extraction:** Feeds up to 50k chars of scraped content into Gemini 2.5 Flash for structured pricing extraction.
+- **Confidence Tiers:** Confirmed pricing keeps Gemini's value_score; estimated pricing caps at 0.5; unknown pricing defaults to 0.3 with uncertainty warnings.
+
 **Role:** "No-surprises" auditor.
 **Model:** Gemini 2.5 Flash
 **Tools:** Firecrawl
@@ -263,6 +285,11 @@ Transparent, normalized cost profiles per venue.
 ---
 
 ### Node 6: The CRITIC (Adversarial Node)
+
+**Status:** ✅ Implemented
+- **Async API Fetching:** Gathers real-time constraints concurrently using `OpenWeather API` and `PredictHQ API`.
+- **Adversarial Reasoning:** Passes the venue details, weather, and events to Gemini to identify dealbreakers.
+- **Veto Mechanism:** Evaluates the top 3 candidates and sets the global `veto` flag if the #1 candidate presents a critical risk, triggering a LangGraph retry.
 
 **Role:** Actively tries to break the plan.
 **Model:** Gemini (Adversarial Reasoning)
@@ -309,6 +336,11 @@ Risk flags, veto signals, and explicit warnings.
 ---
 
 ### Node 7: SNOWFLAKE (Memory & Intelligence Layer)
+
+**Status:** ✅ Implemented
+- **Connection Engine:** Uses `snowflake-connector-python` to establish sessions using configured credentials.
+- **Memory Tools:** Implemented `log_risk` and `get_risks` to persist and retrieve historical anomalies.
+- **RAG Engine:** Implemented `cortex_search` using `SEARCH_MATCH` to extract relevant context based on queries.
 
 **Role:** Long-term memory and predictive intelligence.
 
@@ -490,7 +522,7 @@ Host the multi-agent system on Vultr's cloud compute for production-grade perfor
 - Users report unexpected fees.
 
 **Checks:**
-- Verify Firecrawl/Jina Reader selectors are still valid.
+- Verify Firecrawl selectors are still valid.
 - Confirm Cost Analyst is computing Total Cost of Attendance, not just entry price.
 - Check Snowflake historical pricing baseline is populated.
 

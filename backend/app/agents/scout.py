@@ -70,8 +70,7 @@ def scout_node(state: PathfinderState) -> PathfinderState:
 
     if not query:
         logger.warning("Scout: no query to search — returning empty")
-        state["candidate_venues"] = []
-        return state
+        return {"candidate_venues": []}
 
     # Run both APIs concurrently
     async def _fetch():
@@ -98,5 +97,4 @@ def scout_node(state: PathfinderState) -> PathfinderState:
     logger.info("Scout found %d candidates (%d Google, %d Yelp, %d after dedup)",
                 len(candidates), len(google_results), len(yelp_results), len(unique_venues))
 
-    state["candidate_venues"] = candidates
-    return state
+    return {"candidate_venues": candidates}

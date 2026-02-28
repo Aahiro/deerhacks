@@ -1,0 +1,45 @@
+Cortex search failed: 290404 (08001): 404 Not Found: post BR07012.snowflakecomputing.com:443/session/v1/login-request
+Firecrawl /map failed for http://www.escapemanor.com/toronto: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Firecrawl /map failed for https://escapebox.ca/: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Firecrawl /map failed for http://www.enigmaroom.ca/: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Firecrawl /map failed for http://roundaboutcanada.com/: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Firecrawl /map failed for https://trapped.com/: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Cortex search failed: 290404 (08001): 404 Not Found: post BR07012.snowflakecomputing.com:443/session/v1/login-request
+Firecrawl /map failed for https://www.inblackescape.com/: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Firecrawl /map failed for http://captiverooms.com/: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Firecrawl /map failed for https://trapped.com/: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Firecrawl /map failed for https://www.yelp.com/biz/captive-escape-rooms-toronto?adjust_creative=iQs_m8gdC41iyFDqXExXIQ&utm_campaign=yelp_api_v3&utm_medium=api_v3_business_search&utm_source=iQs_m8gdC41iyFDqXExXIQ: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Firecrawl /map failed for http://www.enigmaroom.ca/: Client error '429 Too Many Requests' for url 'https://api.firecrawl.dev/v1/map'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429
+Traceback (most recent call last):
+  File "C:\Users\ryann\OneDrive\Desktop\projects\deerhacks\backend\test_pipeline_e2e.py", line 51, in <module>
+    run_test()
+  File "C:\Users\ryann\OneDrive\Desktop\projects\deerhacks\backend\test_pipeline_e2e.py", line 21, in run_test
+    final_state = pathfinder_graph.invoke(state)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ryann\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\langgraph\pregel\main.py", line 3071, in invoke
+    for chunk in self.stream(
+  File "C:\Users\ryann\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\langgraph\pregel\main.py", line 2656, in stream
+    loop.after_tick()
+  File "C:\Users\ryann\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\langgraph\pregel\_loop.py", line 542, in after_tick
+    self.updated_channels = apply_writes(
+                            ^^^^^^^^^^^^^
+  File "C:\Users\ryann\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\langgraph\pregel\_algo.py", line 296, in apply_writes
+    if channels[chan].update(vals) and next_version is not None:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ryann\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\langgraph\channels\last_value.py", line 64, in update
+    raise InvalidUpdateError(msg)
+langgraph.errors.InvalidUpdateError: At key 'accessibility_scores': Can receive only one value per step. Use an Annotated key to handle multiple values.
+For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE
+Testing Graph with prompt: I need a budget-friendly escape room for 4 people in downtown Toronto this Saturday at 2 PM.
+
+[Executing Graph...]

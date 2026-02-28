@@ -1,0 +1,76 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-9.0.2, pluggy-1.6.0
+rootdir: C:\Users\ryann\OneDrive\Desktop\projects\deerhacks\backend
+plugins: anyio-4.9.0, langsmith-0.6.9
+collected 2 items
+
+tests\test_critic.py F.                                                  [100%]C:\Users\ryann\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\_pytest\unraisableexception.py:33: RuntimeWarning: coroutine 'critic_node.<locals>._analyze_venue' was never awaited
+  gc.collect()
+RuntimeWarning: Enable tracemalloc to get the object allocation traceback
+
+
+================================== FAILURES ===================================
+____________________________ test_critic_node_veto ____________________________
+
+mock_get_weather = <AsyncMock name='get_weather' id='2114823772112'>
+mock_get_events = <AsyncMock name='get_events' id='2114823676752'>
+mock_generate_content = <AsyncMock name='generate_content' id='2114823851664'>
+
+    @patch('app.agents.critic.generate_content', new_callable=AsyncMock)
+    @patch('app.agents.critic.get_events', new_callable=AsyncMock)
+    @patch('app.agents.critic.get_weather', new_callable=AsyncMock)
+    def test_critic_node_veto(mock_get_weather, mock_get_events, mock_generate_content):
+        # Mock services
+        mock_get_weather.return_value = {"condition": "Rain"}
+        mock_get_events.return_value = [{"title": "Marathon"}]
+    
+        # Mock Gemini telling us it's a veto
+        mock_generate_content.return_value = '''
+        {
+            "risks": [
+                {"type": "weather", "severity": "high", "detail": "Rain"}
+            ],
+            "veto": true,
+            "veto_reason": "Too rainy for an outdoor event."
+        }
+        '''
+    
+        state: PathfinderState = {
+            "parsed_intent": {"activity": "picnic"},
+            "candidate_venues": [
+                {"venue_id": "v1", "name": "Park A", "lat": 43.0, "lng": -79.0}
+            ]
+        }
+    
+>       new_state = critic_node(state)
+                    ^^^^^^^^^^^^^^^^^^
+
+tests\test_critic.py:31: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+app\agents\critic.py:106: in critic_node
+    results = asyncio.run(asyncio.gather(*[_analyze_venue(v) for v in top_candidates]))
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.11_3.11.2544.0_x64__qbz5n2kfra8p0\Lib\asyncio\runners.py:190: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+self = <asyncio.runners.Runner object at 0x000001EC65532390>
+coro = <_GatheringFuture pending>
+
+    def run(self, coro, *, context=None):
+        """Run a coroutine inside the embedded event loop."""
+        if not coroutines.iscoroutine(coro):
+>           raise ValueError("a coroutine was expected, got {!r}".format(coro))
+E           ValueError: a coroutine was expected, got <_GatheringFuture pending>
+
+C:\Program Files\WindowsApps\PythonSoftwareFoundation.Python.3.11_3.11.2544.0_x64__qbz5n2kfra8p0\Lib\asyncio\runners.py:89: ValueError
+============================== warnings summary ===============================
+app\core\config.py:9
+  C:\Users\ryann\OneDrive\Desktop\projects\deerhacks\backend\app\core\config.py:9: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_critic.py::test_critic_node_veto - ValueError: a coroutine ...
+=================== 1 failed, 1 passed, 1 warning in 0.15s ====================

@@ -84,8 +84,7 @@ def vibe_matcher_node(state: PathfinderState) -> PathfinderState:
 
     if not candidates:
         logger.info("Vibe Matcher: no candidates to score")
-        state["vibe_scores"] = {}
-        return state
+        return {"vibe_scores": {}}
 
     # Score all venues concurrently
     async def _score_all():
@@ -116,5 +115,4 @@ def vibe_matcher_node(state: PathfinderState) -> PathfinderState:
                 sum(1 for v in vibe_scores.values() if v.get("score") is not None),
                 len(candidates))
 
-    state["vibe_scores"] = vibe_scores
-    return state
+    return {"vibe_scores": vibe_scores}

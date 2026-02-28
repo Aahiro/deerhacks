@@ -19,5 +19,4 @@ def access_analyst_node(state: PathfinderState) -> PathfinderState:
     4. Generate GeoJSON isochrone blobs for frontend rendering.
     5. Return updated state with accessibility_scores + isochrones.
     """
-    # TODO: implement Mapbox + Distance Matrix calls
-    return state
+    return {"accessibility_scores": {}, "isochrones": {}}

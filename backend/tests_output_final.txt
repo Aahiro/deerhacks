@@ -1,0 +1,22 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.9, pytest-9.0.2, pluggy-1.6.0 -- C:\Users\ryann\AppData\Local\Microsoft\WindowsApps\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\ryann\OneDrive\Desktop\projects\deerhacks\backend
+plugins: anyio-4.9.0, langsmith-0.6.9
+collecting ... collected 7 items
+
+tests/test_commander.py::test_commander_node_success PASSED              [ 14%]
+tests/test_commander.py::test_commander_node_fallback_on_error PASSED    [ 28%]
+tests/test_critic.py::test_critic_node_veto PASSED                       [ 42%]
+tests/test_critic.py::test_critic_node_no_candidates PASSED              [ 57%]
+tests/test_snowflake.py::test_snowflake_connection PASSED                [ 71%]
+tests/test_snowflake.py::test_log_risk PASSED                            [ 85%]
+tests/test_snowflake.py::test_cortex_search PASSED                       [100%]
+
+============================== warnings summary ===============================
+app\core\config.py:9
+  C:\Users\ryann\OneDrive\Desktop\projects\deerhacks\backend\app\core\config.py:9: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.12/migration/
+    class Settings(BaseSettings):
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================== 7 passed, 1 warning in 0.82s =========================
