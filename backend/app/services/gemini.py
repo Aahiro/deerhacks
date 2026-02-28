@@ -50,7 +50,7 @@ async def generate_content(
     if image_urls:
         for img_url in image_urls[:3]:  # limit to 3 images to stay frugal
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
+                async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
                     img_resp = await client.get(img_url)
                     img_resp.raise_for_status()
                     import base64
