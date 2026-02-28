@@ -88,16 +88,30 @@ async def _analyze_venue_access(
 
 def _resolve_origin(state: dict) -> tuple[float, float]:
     """
-    Try to determine the user's starting location from the parsed intent.
-    Falls back to downtown Toronto if not specified.
+    Determine the group's origin point for travel-time scoring.
+
+    Priority
+    --------
+    1. Explicit origin_lat/origin_lng in parsed_intent.
+    2. Centroid of member_locations (average lat/lng across all members).
+    3. Downtown Toronto fallback.
     """
     intent = state.get("parsed_intent", {})
 
-    # Check for explicit origin coordinates in intent
+    # 1. Explicit origin in intent
     origin_lat = intent.get("origin_lat")
     origin_lng = intent.get("origin_lng")
     if origin_lat and origin_lng:
         return (float(origin_lat), float(origin_lng))
+
+    # 2. Centroid of member locations
+    members = state.get("member_locations", [])
+    valid = [m for m in members if m.get("lat") and m.get("lng")]
+    if valid:
+        avg_lat = sum(m["lat"] for m in valid) / len(valid)
+        avg_lng = sum(m["lng"] for m in valid) / len(valid)
+        logger.info("Access Analyst: using centroid of %d member locations as origin", len(valid))
+        return (avg_lat, avg_lng)
 
     return _DEFAULT_ORIGIN
 

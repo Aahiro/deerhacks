@@ -188,43 +188,6 @@ def _keyword_fallback(raw_prompt: str) -> dict:
     }
 
 
-def _apply_user_profile_weights(
-    agent_weights: dict, user_profile: dict
-) -> dict:
-    """
-    Adjust agent weights based on the authenticated user's profile metadata.
-    Reads app_metadata set by Auth0 rules/actions.
-    """
-    meta = user_profile.get("app_metadata", {})
-    preferences = meta.get("preferences", {})
-
-    # Budget sensitivity
-    if preferences.get("budget_sensitive"):
-        agent_weights["cost_analyst"] = min(
-            agent_weights.get("cost_analyst", 0.5) + 0.2, 1.0
-        )
-
-    # Accessibility priority
-    if preferences.get("accessibility_priority"):
-        agent_weights["access_analyst"] = min(
-            agent_weights.get("access_analyst", 0.5) + 0.2, 1.0
-        )
-
-    # Vibe-first user
-    if preferences.get("vibe_first"):
-        agent_weights["vibe_matcher"] = min(
-            agent_weights.get("vibe_matcher", 0.4) + 0.2, 1.0
-        )
-
-    # Risk-averse user
-    if preferences.get("risk_averse"):
-        agent_weights["critic"] = min(
-            agent_weights.get("critic", 0.4) + 0.2, 1.0
-        )
-
-    return agent_weights
-
-
 # ── Main node entry point ─────────────────────────────────────────────
 
 def commander_node(state: PathfinderState) -> PathfinderState:
@@ -236,8 +199,7 @@ def commander_node(state: PathfinderState) -> PathfinderState:
     1. Call Gemini 1.5 Flash to classify intent & extract parameters.
     2. Determine complexity tier (quick / full / adversarial).
     3. Compute dynamic agent weights based on keywords.
-    4. Query Snowflake for historical risk pre-check.
-    5. Return updated state with parsed_intent, complexity_tier, agent_weights.
+    4. Return updated state with parsed_intent, complexity_tier, agent_weights.
 
     Fallback: If Gemini is unavailable, use keyword-based heuristics.
     """

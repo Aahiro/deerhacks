@@ -33,7 +33,6 @@ async def create_plan(request: PlanRequest):
         "veto": False,
         "veto_reason": None,
         "ranked_results": [],
-        "snowflake_context": None,
         # Forward request params for agents to use
         "member_locations": request.member_locations or [],
     }
