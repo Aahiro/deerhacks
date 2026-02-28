@@ -15,8 +15,8 @@ from app.agents.synthesiser import synthesiser_node
 
 
 def _should_retry(state: PathfinderState) -> str:
-    """Conditional edge: retry if the Critic vetoed the plan."""
-    if state.get("veto"):
+    """Conditional edge: retry once if the Critic vetoed. After that, synthesise anyway."""
+    if state.get("veto") and state.get("retry_count", 0) < 1:
         return "commander"
     return "synthesiser"
 

@@ -11,21 +11,13 @@ langchain>=0.1.10
 langchain-google-genai==0.0.6
 
 # APIs
-googlemaps==4.10.0
 httpx==0.26.0
-
-# Snowflake
-snowflake-connector-python==3.6.0
-snowflake-snowpark-python==1.11.1
 
 # Caching (optional)
 redis==5.0.1
 
 # Vector Search (optional)
 faiss-cpu==1.7.4
-
-# Web Scraping
-firecrawl-py==0.0.5
 
 # Auth
 python-jose[cryptography]==3.3.0

@@ -33,6 +33,7 @@ async def create_plan(request: PlanRequest, user: dict = Depends(get_optional_us
         "risk_flags": {},
         "veto": False,
         "veto_reason": None,
+        "retry_count": 0,
         "ranked_results": [],
         # Forward request params for agents to use
         "member_locations": request.member_locations or [],

@@ -33,41 +33,58 @@ logger = logging.getLogger(__name__)
 _FIRECRAWL_BASE = "https://api.firecrawl.dev/v1"
 
 
+async def _firecrawl_post(endpoint: str, payload: dict, retries: int = 3) -> Optional[dict]:
+    """
+    POST to Firecrawl with automatic 429 retry + exponential backoff.
+    Shared by both /map and /scrape to avoid duplicating retry logic.
+    """
+    if not settings.FIRECRAWL_API_KEY:
+        return None
+
+    url = f"{_FIRECRAWL_BASE}/{endpoint}"
+    headers = {"Authorization": f"Bearer {settings.FIRECRAWL_API_KEY}"}
+
+    for attempt in range(retries):
+        try:
+            async with httpx.AsyncClient(timeout=25) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+
+            if resp.status_code == 429:
+                wait = 2 ** attempt  # 1s, 2s, 4s
+                logger.warning("Firecrawl /%s rate limited (429). Retrying %s in %ds...",
+                               endpoint, payload.get("url", ""), wait)
+                await asyncio.sleep(wait)
+                continue
+
+            resp.raise_for_status()
+            return resp.json()
+
+        except httpx.HTTPError as exc:
+            logger.warning("Firecrawl /%s network error for %s: %s",
+                           endpoint, payload.get("url", ""), exc)
+            if attempt < retries - 1:
+                await asyncio.sleep(2 ** attempt)
+
+    return None
+
+
 async def _firecrawl_map(website_url: str) -> list[str]:
     """
     Use Firecrawl /map to discover sub-pages on a venue website.
     Returns a list of page URLs, filtered for pricing-related pages.
     """
-    if not settings.FIRECRAWL_API_KEY:
+    data = await _firecrawl_post("map", {
+        "url": website_url,
+        "search": "pricing rates cost fees menu package book reserve",
+    })
+
+    if not data:
         return []
 
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(
-                f"{_FIRECRAWL_BASE}/map",
-                headers={"Authorization": f"Bearer {settings.FIRECRAWL_API_KEY}"},
-                json={
-                    "url": website_url,
-                    "search": "pricing rates cost fees menu package book reserve",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        all_links = data.get("links", [])
-
-        # Filter for pricing / menu / rates pages
-        pricing_keywords = ["pric", "rate", "cost", "fee", "menu", "book", "package"]
-        relevant = [
-            link for link in all_links
-            if any(kw in link.lower() for kw in pricing_keywords)
-        ]
-
-        return relevant if relevant else all_links[:3]
-
-    except httpx.HTTPError as exc:
-        logger.warning("Firecrawl /map failed for %s: %s", website_url, exc)
-        return []
+    all_links = data.get("links", [])
+    pricing_keywords = ["pric", "rate", "cost", "fee", "menu", "book", "package"]
+    relevant = [l for l in all_links if any(kw in l.lower() for kw in pricing_keywords)]
+    return relevant if relevant else all_links[:3]
 
 
 async def _firecrawl_scrape(page_url: str) -> Optional[str]:
@@ -75,27 +92,15 @@ async def _firecrawl_scrape(page_url: str) -> Optional[str]:
     Use Firecrawl /scrape to extract page content as markdown.
     Returns the markdown text of the page.
     """
-    if not settings.FIRECRAWL_API_KEY:
+    data = await _firecrawl_post("scrape", {
+        "url": page_url,
+        "formats": ["markdown"],
+    })
+
+    if not data:
         return None
 
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(
-                f"{_FIRECRAWL_BASE}/scrape",
-                headers={"Authorization": f"Bearer {settings.FIRECRAWL_API_KEY}"},
-                json={
-                    "url": page_url,
-                    "formats": ["markdown"],
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        return data.get("data", {}).get("markdown", "")
-
-    except httpx.HTTPError as exc:
-        logger.warning("Firecrawl /scrape failed for %s: %s", page_url, exc)
-        return None
+    return data.get("data", {}).get("markdown", "")
 
 
 
@@ -279,7 +284,14 @@ def cost_analyst_node(state: PathfinderState) -> PathfinderState:
         return {"cost_profiles": {}}
 
     async def _analyze_all():
-        return await asyncio.gather(*[_analyze_venue_cost(v, group_size) for v in candidates])
+        # Limit to 3 concurrent Firecrawl calls to avoid 429 rate limits
+        sem = asyncio.Semaphore(3)
+
+        async def _throttled(v):
+            async with sem:
+                return await _analyze_venue_cost(v, group_size)
+
+        return await asyncio.gather(*[_throttled(v) for v in candidates])
 
     try:
         results = asyncio.run(_analyze_all())

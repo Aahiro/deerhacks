@@ -32,6 +32,7 @@ class PathfinderState(TypedDict, total=False):
     risk_flags: dict              # venue_id → [risk strings]
     veto: bool                    # True if the Critic forced a retry
     veto_reason: Optional[str]
+    retry_count: int              # number of Commander retries triggered so far
 
     # ── Final ranked output ──
     ranked_results: List[dict]

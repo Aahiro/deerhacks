@@ -303,4 +303,7 @@ def commander_node(state: PathfinderState) -> PathfinderState:
         "complexity_tier": plan.get("complexity_tier", "tier_2"),
         "active_agents": plan.get("active_agents", ["scout"]),
         "agent_weights": agent_weights,
+        "veto": False,  # clear previous veto so Critic evaluates fresh on retry
+        # only increment when we're actually retrying (incoming veto was True)
+        "retry_count": state.get("retry_count", 0) + (1 if state.get("veto") else 0),
     }
