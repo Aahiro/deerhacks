@@ -28,9 +28,9 @@ The system is built around a multi-agent LangGraph workflow, coordinated by a ce
   - **The Benefit:** Dynamically adjusts agent weights based on profile metadata.
   - **Logic:** *"I know this is User A, who prefers low-cost venues. Setting Cost Analyst weight to 0.9."*
 
-**Role:** Central brain and LangGraph Supervisor.
+**Role:** Intent parser and weight configurator. LangGraph manages all routing and orchestration.
 **Model:** Gemini 1.5 Flash
-**Never calls external APIs directly.**
+**Calls Gemini 1.5 Flash directly** for intent parsing and tier classification.
 
 **Responsibilities:**
 
@@ -287,15 +287,58 @@ Risk flags, veto signals, and explicit warnings.
 
 **Structured Output Schema:**
 ```json
+{
+  "risk_flags": {
+    "venue_id": ["risk description", "..."]
+  },
+  "veto": true,
+  "veto_reason": "Outdoor court has no lights — sunset is at 5:30 PM Saturday"
 }
 ```
 
+---
+
+### Node 7: The SYNTHESISER (Final Ranking Node)
+
+**Status:** ✅ Implemented
+
+**Role:** Final aggregator and explainer. Applies dynamic weights from the Commander to all agent scores, computes composite ranked scores, and generates the human-readable `why`/`watch_out` text for each venue.
+**Model:** Gemini 1.5 Flash
+
+**Responsibilities:**
+
+- Applies `agent_weights` to vibe, accessibility, cost, and critic scores → computes a composite ranked score per venue.
+- Runs `asyncio.gather()` with Gemini to generate `why` and `watch_out` text concurrently for all candidates.
+- Emits the final `ranked_results` list consumed by the `/plan` endpoint.
+
+**Note:** Commander, Scout, and Synthesiser always run. Vibe Matcher, Access Analyst, Cost Analyst, and Critic are conditionally activated based on `active_agents` from the Commander.
+
+**Structured Output Schema:**
+```json
+{
+  "ranked_results": [
+    {
+      "rank": 1,
+      "name": "HoopDome",
+      "address": "123 Court St, Toronto",
+      "lat": 43.65,
+      "lng": -79.38,
+      "vibe_score": 0.72,
+      "accessibility_score": 0.81,
+      "cost_profile": { "per_person": 5.00, "total_cost_of_attendance": 50.00 },
+      "why": "Central location, confirmed $25/hr pricing, and high group accessibility.",
+      "watch_out": "No lights — book before 5:30 PM on Saturday.",
+      "isochrone_geojson": { "type": "FeatureCollection", "features": ["..."] }
+    }
+  ]
+}
+```
 
 ---
 
 ## 🎨 Final Synthesis & Output
 
-The Commander collects all node outputs, applies final dynamic weights, and emits a clean JSON response to the frontend.
+The Synthesiser collects all node outputs, applies the Commander's dynamic weights, and emits a clean JSON response to the frontend.
 
 ### The User Receives:
 
@@ -486,6 +529,7 @@ Knowledge memory and long-term risk logging.
 | Cost Analyst | Firecrawl + Gemini | True cost extraction and pricing analysis |
 | Crowd Analyst *(optional)* | Google Places Reviews, Yelp Reviews | Review aggregation, competitor density, social proof scoring |
 | Critic | Gemini (Adversarial Reasoning) + OpenWeather, PredictHQ | Failure detection, risk forecasting, veto logic |
+| Synthesiser | Gemini 1.5 Flash | Composite score ranking, `why`/`watch_out` generation, final output assembly |
 | Memory & RAG *(optional)* | Vector Database | Historical risk storage and predictive intelligence |
 | Orchestration | LangGraph | Execution order, shared state, conditional retries |
 | Frontend Mapping | Mapbox SDK | Interactive maps, pins, isochrone overlays |
