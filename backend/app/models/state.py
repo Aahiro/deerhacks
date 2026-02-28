@@ -38,4 +38,5 @@ class PathfinderState(TypedDict, total=False):
 
     # ── User-provided context ──
     member_locations: List[dict]  # [{lat, lng}] for each group member
+    user_profile: Optional[dict]  # decoded JWT claims from Auth0
 

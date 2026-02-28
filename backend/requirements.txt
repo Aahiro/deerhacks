@@ -27,6 +27,9 @@ faiss-cpu==1.7.4
 # Web Scraping
 firecrawl-py==0.0.5
 
+# Auth
+python-jose[cryptography]==3.3.0
+
 # Utilities
 geojson==3.1.0
 nest_asyncio==1.6.0

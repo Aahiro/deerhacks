@@ -188,6 +188,43 @@ def _keyword_fallback(raw_prompt: str) -> dict:
     }
 
 
+# ── User profile weight adjustment ───────────────────────────────────
+
+def _apply_user_profile_weights(agent_weights: dict, user_profile: dict) -> dict:
+    """
+    Nudge agent weights based on the authenticated user's saved preferences.
+
+    Preferences come from the Auth0 JWT's app_metadata.preferences field:
+      budget_sensitive    → boost cost_analyst weight
+      accessibility_priority → boost access_analyst weight
+      vibe_first          → boost vibe_matcher weight
+      risk_averse         → boost critic weight
+    """
+    prefs = user_profile.get("app_metadata", {}).get("preferences", {})
+    if not prefs:
+        return agent_weights
+
+    weights = dict(agent_weights)  # copy so we don't mutate
+
+    if prefs.get("budget_sensitive"):
+        weights["cost_analyst"] = min(1.0, weights.get("cost_analyst", 0.5) + 0.2)
+        logger.info("Commander: boosting cost_analyst (budget_sensitive user)")
+
+    if prefs.get("accessibility_priority"):
+        weights["access_analyst"] = min(1.0, weights.get("access_analyst", 0.5) + 0.2)
+        logger.info("Commander: boosting access_analyst (accessibility_priority user)")
+
+    if prefs.get("vibe_first"):
+        weights["vibe_matcher"] = min(1.0, weights.get("vibe_matcher", 0.5) + 0.2)
+        logger.info("Commander: boosting vibe_matcher (vibe_first user)")
+
+    if prefs.get("risk_averse"):
+        weights["critic"] = min(1.0, weights.get("critic", 0.5) + 0.2)
+        logger.info("Commander: boosting critic (risk_averse user)")
+
+    return weights
+
+
 # ── Main node entry point ─────────────────────────────────────────────
 
 def commander_node(state: PathfinderState) -> PathfinderState:
@@ -255,9 +292,15 @@ def commander_node(state: PathfinderState) -> PathfinderState:
         logger.warning("Commander Gemini call failed: %s — using keyword fallback", e)
         plan = _keyword_fallback(raw_prompt)
 
+    agent_weights = plan.get("agent_weights", {"scout": 1.0})
+
+    user_profile = state.get("user_profile", {})
+    if user_profile:
+        agent_weights = _apply_user_profile_weights(agent_weights, user_profile)
+
     return {
         "parsed_intent": plan.get("parsed_intent", {}),
         "complexity_tier": plan.get("complexity_tier", "tier_2"),
         "active_agents": plan.get("active_agents", ["scout"]),
-        "agent_weights": plan.get("agent_weights", {"scout": 1.0}),
+        "agent_weights": agent_weights,
     }

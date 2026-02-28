@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     # ── Firecrawl ──
     FIRECRAWL_API_KEY: str = ""
 
+    # ── Auth0 ──
+    AUTH0_DOMAIN: str = ""      # e.g. dev-xyz.us.auth0.com
+    AUTH0_AUDIENCE: str = ""    # e.g. https://pathfinder.api
+
     # ── CORS ──
     CORS_ORIGINS: List[str] = ["http://localhost:3000"]
 

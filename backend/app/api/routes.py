@@ -2,15 +2,16 @@
 PATHFINDER API routes.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.schemas import PlanRequest, PlanResponse
+from app.dependencies import get_optional_user
 
 router = APIRouter()
 
 
 @router.post("/plan", response_model=PlanResponse)
-async def create_plan(request: PlanRequest):
+async def create_plan(request: PlanRequest, user: dict = Depends(get_optional_user)):
     """
     Accept a natural-language activity request and return ranked venues.
 
@@ -35,6 +36,7 @@ async def create_plan(request: PlanRequest):
         "ranked_results": [],
         # Forward request params for agents to use
         "member_locations": request.member_locations or [],
+        "user_profile": user,
     }
 
     # Inject explicit fields into parsed_intent if provided
