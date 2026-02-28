@@ -21,7 +21,7 @@ async def get_isochrone(
     lat: float,
     lng: float,
     profile: str = "driving",
-    contour_minutes: int = 15,
+    contour_minutes: int | list[int] = 15,
 ) -> Optional[dict]:
     """
     Fetch an isochrone polygon from the Mapbox Isochrone API.
@@ -32,8 +32,9 @@ async def get_isochrone(
         Centre point coordinates.
     profile : str
         Travel mode: "driving", "walking", or "cycling".
-    contour_minutes : int
-        Maximum travel time in minutes (1–60).
+    contour_minutes : int or list[int]
+        Travel time(s) in minutes (1–60). Pass a list for multiple contours,
+        e.g. [10, 20, 30] returns three nested polygons in one response.
 
     Returns
     -------
@@ -46,8 +47,15 @@ async def get_isochrone(
         return None
 
     url = f"{_ISOCHRONE_URL}/{profile}/{lng},{lat}"
+
+    # Mapbox expects a comma-separated string for multiple contours
+    if isinstance(contour_minutes, list):
+        contours_str = ",".join(str(m) for m in contour_minutes)
+    else:
+        contours_str = str(contour_minutes)
+
     params = {
-        "contours_minutes": str(contour_minutes),
+        "contours_minutes": contours_str,
         "polygons": "true",
         "access_token": token,
     }

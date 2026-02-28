@@ -42,7 +42,7 @@ async def _analyze_venue_access(
 
     # Run both API calls concurrently
     isochrone_data, dm_results = await asyncio.gather(
-        get_isochrone(lat, lng, profile=profile, contours_minutes=[10, 20, 30]),
+        get_isochrone(lat, lng, profile=profile, contour_minutes=[10, 20, 30]),
         get_distance_matrix(origin[0], origin[1], [(lat, lng)], mode=profile),
     )
 
