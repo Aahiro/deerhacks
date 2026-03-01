@@ -97,9 +97,9 @@ class TestScoutNode:
         assert "source" in first, "Missing source"
         assert first["source"] in ("google_places", "yelp"), f"Unknown source: {first['source']}"
 
-        print(f"\n✅ Scout found {len(candidates)} candidates:")
+        print(f"\n[OK] Scout found {len(candidates)} candidates:")
         for v in candidates:
-            print(f"   [{v['source']}] {v['name']} — ⭐ {v['rating']} ({v['review_count']} reviews)")
+            print(f"   [{v['source']}] {v['name']} | rating={v['rating']} ({v['review_count']} reviews)")
 
     def test_scout_empty_intent(self):
         """Scout with no query should return empty list gracefully."""

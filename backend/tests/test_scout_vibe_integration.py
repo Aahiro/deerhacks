@@ -43,7 +43,7 @@ class TestScoutVibeIntegration:
         candidates = state.get("candidate_venues", [])
         assert len(candidates) > 0, "Scout must find at least 1 venue for this test"
 
-        print(f"\n📍 Scout found {len(candidates)} candidates")
+        print(f"\n[Scout] Found {len(candidates)} candidates")
         for v in candidates:
             print(f"   [{v['source']}] {v['name']}")
 
@@ -57,7 +57,7 @@ class TestScoutVibeIntegration:
             vid = venue["venue_id"]
             assert vid in scores, f"Vibe Matcher missed candidate {vid} ({venue['name']})"
 
-        print(f"\n🎨 Vibe Matcher scored {len(scores)} venues:")
+        print(f"\n[Vibe] Matched {len(scores)} venues:")
         for vid, s in scores.items():
             name = next((v["name"] for v in candidates if v["venue_id"] == vid), vid)
             # vibe_matcher now uses vibe_score / primary_style keys (upstream rewrite)

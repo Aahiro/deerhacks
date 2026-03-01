@@ -17,6 +17,9 @@ def pytest_configure(config):
 
 def pytest_collection_modifyitems(config, items):
     """Auto-skip integration tests unless -m integration is passed explicitly."""
+    # Only skip if the user hasn't explicitly asked for integration tests
+    if "integration" in (config.option.markexpr or ""):
+        return  # user asked for them — let them run
     skip_integration = pytest.mark.skip(reason="integration test — run with: pytest -m integration")
     for item in items:
         if "integration" in item.keywords:
