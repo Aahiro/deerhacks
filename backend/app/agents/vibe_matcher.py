@@ -62,7 +62,10 @@ async def _score_venue(venue: dict, vibe_preference: str) -> dict | None:
             image_urls=photos if photos else None,
         )
         if not raw:
+            logger.warning("Vibe scorer: empty response from Gemini for %s", venue.get("name"))
             return None
+
+        logger.info("Vibe scorer raw response for %s: %r", venue.get("name"), raw[:300])
 
         # Strip markdown fences if Gemini wraps the JSON
         cleaned = raw.strip()
@@ -72,9 +75,11 @@ async def _score_venue(venue: dict, vibe_preference: str) -> dict | None:
             cleaned = cleaned.rsplit("```", 1)[0]
         cleaned = cleaned.strip()
 
-        return json.loads(cleaned)
+        result = json.loads(cleaned)
+        logger.info("Vibe scorer parsed for %s: %s", venue.get("name"), result)
+        return result
     except (json.JSONDecodeError, Exception) as exc:
-        logger.warning("Vibe scoring failed for %s: %s", venue.get("name"), exc)
+        logger.warning("Vibe scoring failed for %s: %s | raw=%r", venue.get("name"), exc, raw[:300] if 'raw' in dir() else 'N/A')
         return None
 
 

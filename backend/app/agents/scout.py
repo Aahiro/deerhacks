@@ -62,7 +62,7 @@ def _deduplicate(venues: list[dict], threshold_m: float = 100) -> list[dict]:
     return kept
 
 
-def scout_node(state: PathfinderState) -> PathfinderState:
+async def scout_node(state: PathfinderState) -> PathfinderState:
     """
     Discover 5-10 candidate venues.
 
@@ -78,7 +78,8 @@ def scout_node(state: PathfinderState) -> PathfinderState:
 
     # Build search query from intent fields
     activity = intent.get("activity", "")
-    location = intent.get("location", "Toronto")
+    # Use "Toronto, ON" as fallback — guard against empty string from intent
+    location = intent.get("location") or "Toronto, ON"
     raw_prompt = state.get("raw_prompt", "")
     query = activity if activity else raw_prompt
 
@@ -88,15 +89,12 @@ def scout_node(state: PathfinderState) -> PathfinderState:
 
     # Run both APIs concurrently — return_exceptions=True so one failure
     # doesn't wipe out the other API's results
-    async def _fetch():
-        return await asyncio.gather(
+    try:
+        google_raw, yelp_raw = await asyncio.gather(
             search_places(query=query, location=location, max_results=8),
             search_yelp(term=query, location=location, max_results=8),
             return_exceptions=True,
         )
-
-    try:
-        google_raw, yelp_raw = asyncio.run(_fetch())
     except Exception as exc:
         logger.error("Scout gather failed: %s", exc)
         google_raw, yelp_raw = [], []
