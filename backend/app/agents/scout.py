@@ -72,18 +72,27 @@ def scout_node(state: PathfinderState) -> PathfinderState:
         logger.warning("Scout: no query to search — returning empty")
         return {"candidate_venues": []}
 
-    # Run both APIs concurrently
+    # Run both APIs concurrently — return_exceptions=True so one failure
+    # doesn't wipe out the other API's results
     async def _fetch():
         return await asyncio.gather(
             search_places(query=query, location=location, max_results=8),
             search_yelp(term=query, location=location, max_results=8),
+            return_exceptions=True,
         )
 
     try:
-        google_results, yelp_results = asyncio.run(_fetch())
+        google_raw, yelp_raw = asyncio.run(_fetch())
     except Exception as exc:
-        logger.error("Scout API calls failed: %s", exc)
-        google_results, yelp_results = [], []
+        logger.error("Scout gather failed: %s", exc)
+        google_raw, yelp_raw = [], []
+
+    google_results = google_raw if isinstance(google_raw, list) else []
+    yelp_results = yelp_raw if isinstance(yelp_raw, list) else []
+    if isinstance(google_raw, Exception):
+        logger.warning("Google Places failed: %s", google_raw)
+    if isinstance(yelp_raw, Exception):
+        logger.warning("Yelp failed: %s", yelp_raw)
 
     # Merge all results
     all_venues = google_results + yelp_results
