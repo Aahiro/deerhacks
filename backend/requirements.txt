@@ -17,7 +17,7 @@ httpx==0.26.0
 redis==5.0.1
 
 # Vector Search (optional)
-faiss-cpu==1.7.4
+faiss-cpu>=1.7.4
 
 # Auth
 python-jose[cryptography]==3.3.0
