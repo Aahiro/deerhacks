@@ -46,3 +46,10 @@ class PathfinderState(TypedDict, total=False):
     # ── User-provided context ──
     member_locations: List[dict]  # [{lat, lng}] for each group member
 
+    # ── Snowflake memory ──
+    snowflake_context: Optional[dict]  # Historical risk data from Snowflake
+
+    # ── Chat reprompting ──
+    chat_history: Optional[List[dict]]  # [{role, content}] for conversational loop
+
+
