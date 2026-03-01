@@ -259,6 +259,141 @@ class TestCostAnalystEdgeCases:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ACCESS ANALYST
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAccessAnalystEdgeCases:
+
+    def test_no_candidates_returns_empty(self):
+        from app.agents.access_analyst import access_analyst_node
+        result = access_analyst_node({"candidate_venues": [], "parsed_intent": {}, "member_locations": []})
+        assert result["accessibility_scores"] == {}
+        assert result["isochrones"] == {}
+
+    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
+    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
+    def test_close_venue_gets_high_score(self, mock_dm, mock_iso):
+        from app.agents.access_analyst import access_analyst_node
+        # 5 minutes → score should be 1.0
+        mock_dm.return_value = [{"duration_sec": 300, "distance_m": 800, "status": "OK"}]
+        mock_iso.return_value = None
+        state = {
+            "candidate_venues": [{"venue_id": "v1", "name": "Nearby Cafe", "lat": 43.65, "lng": -79.38}],
+            "parsed_intent": {},
+            "member_locations": [],
+            "raw_prompt": "cafe",
+        }
+        result = access_analyst_node(state)
+        score = result["accessibility_scores"]["v1"]["score"]
+        assert score == 1.0, f"Expected 1.0 for 5-min venue, got {score}"
+
+    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
+    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
+    def test_far_venue_gets_low_score(self, mock_dm, mock_iso):
+        from app.agents.access_analyst import access_analyst_node
+        # 90 minutes → score should be 0.1
+        mock_dm.return_value = [{"duration_sec": 5400, "distance_m": 40000, "status": "OK"}]
+        mock_iso.return_value = None
+        state = {
+            "candidate_venues": [{"venue_id": "v1", "name": "Far Away Venue", "lat": 44.0, "lng": -80.0}],
+            "parsed_intent": {},
+            "member_locations": [],
+            "raw_prompt": "venue",
+        }
+        result = access_analyst_node(state)
+        score = result["accessibility_scores"]["v1"]["score"]
+        assert score == 0.1, f"Expected 0.1 for 90-min venue, got {score}"
+
+    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
+    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
+    def test_isochrone_stored_when_api_returns_geojson(self, mock_dm, mock_iso):
+        from app.agents.access_analyst import access_analyst_node
+        fake_geojson = {"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": {"type": "Polygon"}}]}
+        mock_dm.return_value = [{"duration_sec": 600, "distance_m": 2000, "status": "OK"}]
+        mock_iso.return_value = fake_geojson
+        state = {
+            "candidate_venues": [{"venue_id": "v1", "name": "Test Venue", "lat": 43.65, "lng": -79.38}],
+            "parsed_intent": {},
+            "member_locations": [],
+            "raw_prompt": "venue",
+        }
+        result = access_analyst_node(state)
+        assert "v1" in result["isochrones"]
+        assert result["isochrones"]["v1"]["type"] == "FeatureCollection"
+
+    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
+    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
+    def test_api_returns_no_duration_uses_neutral_fallback(self, mock_dm, mock_iso):
+        from app.agents.access_analyst import access_analyst_node
+        # No token → returns empty list → duration_sec = None → score = 0.5
+        mock_dm.return_value = []
+        mock_iso.return_value = None
+        state = {
+            "candidate_venues": [{"venue_id": "v1", "name": "Unknown", "lat": 43.65, "lng": -79.38}],
+            "parsed_intent": {},
+            "member_locations": [],
+            "raw_prompt": "venue",
+        }
+        result = access_analyst_node(state)
+        assert result["accessibility_scores"]["v1"]["score"] == 0.5
+
+    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
+    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
+    def test_member_locations_centroid_used_as_origin(self, mock_dm, mock_iso):
+        from app.agents.access_analyst import _resolve_origin
+        # Two members: centroid should be the average lat/lng
+        state = {
+            "parsed_intent": {},
+            "member_locations": [
+                {"lat": 43.60, "lng": -79.40},
+                {"lat": 43.70, "lng": -79.30},
+            ],
+        }
+        origin = _resolve_origin(state)
+        assert abs(origin[0] - 43.65) < 0.001
+        assert abs(origin[1] - (-79.35)) < 0.001
+
+    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
+    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
+    def test_multiple_venues_all_scored(self, mock_dm, mock_iso):
+        from app.agents.access_analyst import access_analyst_node
+        # Each venue gets its own distance matrix call (one destination per call)
+        mock_dm.return_value = [{"duration_sec": 600, "distance_m": 2000, "status": "OK"}]
+        mock_iso.return_value = None
+        venues = [
+            {"venue_id": "v1", "name": "Venue 1", "lat": 43.65, "lng": -79.38},
+            {"venue_id": "v2", "name": "Venue 2", "lat": 43.66, "lng": -79.39},
+            {"venue_id": "v3", "name": "Venue 3", "lat": 43.67, "lng": -79.40},
+        ]
+        state = {
+            "candidate_venues": venues,
+            "parsed_intent": {},
+            "member_locations": [],
+            "raw_prompt": "venue",
+        }
+        result = access_analyst_node(state)
+        assert len(result["accessibility_scores"]) == 3
+        for vid in ["v1", "v2", "v3"]:
+            assert vid in result["accessibility_scores"]
+            assert result["accessibility_scores"][vid]["score"] != 0.5  # real score, not fallback
+
+    def test_walking_mode_resolved_from_prompt(self):
+        from app.agents.access_analyst import _resolve_travel_mode
+        state = {"raw_prompt": "coffee shop I can walk to", "parsed_intent": {}}
+        assert _resolve_travel_mode(state) == "walking"
+
+    def test_transit_mode_resolved_from_prompt(self):
+        from app.agents.access_analyst import _resolve_travel_mode
+        state = {"raw_prompt": "take the TTC to a bar", "parsed_intent": {}}
+        assert _resolve_travel_mode(state) == "transit"
+
+    def test_driving_is_default_mode(self):
+        from app.agents.access_analyst import _resolve_travel_mode
+        state = {"raw_prompt": "escape room downtown", "parsed_intent": {}}
+        assert _resolve_travel_mode(state) == "driving"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CRITIC
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -460,3 +595,189 @@ class TestAuth0Dependency:
         with pytest.raises(HTTPException) as exc:
             asyncio.run(get_optional_user(credentials=creds))
         assert exc.value.status_code == 401
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FULL MOCKED PIPELINE — All Agents End-to-End
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFullPipelineAllAgents:
+    """
+    Mocked end-to-end test: Commander → Scout → Vibe → Access → Cost → Critic → Synthesiser.
+    All external APIs mocked. Confirms every agent runs and contributes output
+    to ranked_results with correct data shapes.
+    """
+
+    @patch("app.agents.synthesiser.generate_content", new_callable=AsyncMock)
+    @patch("app.agents.critic.generate_content", new_callable=AsyncMock)
+    @patch("app.agents.critic.get_weather", new_callable=AsyncMock)
+    @patch("app.agents.critic.get_events", new_callable=AsyncMock)
+    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
+    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
+    @patch("app.agents.cost_analyst._firecrawl_post", new_callable=AsyncMock)
+    @patch("app.agents.cost_analyst.generate_content", new_callable=AsyncMock)
+    @patch("app.agents.vibe_matcher.generate_content", new_callable=AsyncMock)
+    @patch("app.agents.scout.search_yelp", new_callable=AsyncMock)
+    @patch("app.agents.scout.search_places", new_callable=AsyncMock)
+    @patch("app.agents.commander.generate_content", new_callable=AsyncMock)
+    def test_all_agents_run_and_produce_ranked_results(
+        self,
+        mock_cmd_gen,
+        mock_places,
+        mock_yelp,
+        mock_vibe_gen,
+        mock_cost_gen,
+        mock_fc,
+        mock_iso,
+        mock_dm,
+        mock_events,
+        mock_weather,
+        mock_critic_gen,
+        mock_synth_gen,
+    ):
+        from app.graph import pathfinder_graph
+        from app.models.state import PathfinderState
+
+        # ── Commander: returns a plan that activates ALL agents ──
+        mock_cmd_gen.return_value = json.dumps({
+            "parsed_intent": {
+                "activity": "escape room",
+                "location": "downtown Toronto",
+                "group_size": 4,
+                "budget": "moderate",
+                "vibe": "thrilling",
+                "time": "Saturday 2pm",
+            },
+            "complexity_tier": "tier_3",
+            "active_agents": [
+                "scout", "vibe_matcher", "access_analyst", "cost_analyst", "critic"
+            ],
+            "agent_weights": {
+                "scout": 1.0,
+                "vibe_matcher": 0.8,
+                "access_analyst": 0.7,
+                "cost_analyst": 0.9,
+                "critic": 0.6,
+            },
+        })
+
+        # ── Scout: returns 2 real-looking venues ──
+        mock_places.return_value = [
+            {
+                "venue_id": "gp_escape1",
+                "name": "Trapped! Escape Rooms",
+                "address": "90 Eglinton Ave E, Toronto",
+                "lat": 43.7079, "lng": -79.3961,
+                "rating": 4.7, "review_count": 320,
+                "photos": ["https://maps.googleapis.com/photo?ref=abc"],
+                "category": "escape room",
+                "website": "https://trapped.ca",
+                "source": "google_places",
+            },
+        ]
+        mock_yelp.return_value = [
+            {
+                "venue_id": "yelp_escape2",
+                "name": "Escape Manor Toronto",
+                "address": "55 Mercer St, Toronto",
+                "lat": 43.6441, "lng": -79.3980,
+                "rating": 4.5, "review_count": 210,
+                "photos": [],
+                "category": "escape room",
+                "website": "https://escapemanor.com",
+                "source": "yelp",
+            },
+        ]
+
+        # ── Vibe Matcher: both venues score well ──
+        mock_vibe_gen.side_effect = [
+            json.dumps({"score": 0.88, "style": "thrilling", "descriptors": ["intense", "immersive"], "confidence": 0.9}),
+            json.dumps({"score": 0.75, "style": "spooky", "descriptors": ["dramatic", "dark"], "confidence": 0.8}),
+        ]
+
+        # ── Access Analyst: short drive to both ──
+        # get_distance_matrix returns list of dicts, one per destination
+        mock_dm.return_value = [{"duration_sec": 720, "distance_m": 2100, "status": "OK"}]
+        mock_iso.return_value = {
+            "type": "FeatureCollection",
+            "features": [{"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}}],
+        }
+
+        # ── Cost Analyst: website scraped and priced ──
+        mock_fc.return_value = {"links": [], "data": {"markdown": "Escape room: $28/person"}}
+        mock_cost_gen.return_value = json.dumps({
+            "base_cost": 112.0, "hidden_costs": ["tax ~13%"],
+            "total_cost_of_attendance": 126.56, "per_person": 31.64,
+            "value_score": 0.75, "pricing_confidence": "confirmed",
+            "notes": "Confirmed $28/person from website."
+        })
+
+        # ── Critic: no veto ──
+        mock_weather.return_value = {"condition": "Clear", "description": "sunny", "temp_c": 18, "feels_like_c": 17}
+        mock_events.return_value = []
+        mock_critic_gen.return_value = json.dumps({"risks": [], "veto": False, "veto_reason": None})
+
+        # ── Synthesiser: generate explanations ──
+        mock_synth_gen.return_value = json.dumps({
+            "why": "Perfect thrilling escape room for your group, reasonably priced and easy to reach.",
+            "watch_out": "Book in advance — popular on Saturdays.",
+        })
+
+        # ── Run the full graph ──
+        state = PathfinderState(
+            raw_prompt="I need a budget-friendly escape room for 4 people in downtown Toronto this Saturday at 2 PM.",
+        )
+        final_state = pathfinder_graph.invoke(state)
+
+        # ── Assertions: complete pipeline ──
+        ranked = final_state.get("ranked_results", [])
+        assert len(ranked) > 0, "Pipeline produced no ranked results"
+        assert len(ranked) <= 3, "Synthesiser should cap at top 3"
+
+        top = ranked[0]
+        assert "name" in top, "Ranked result missing name"
+        assert "rank" in top, "Missing rank field"
+        assert top["rank"] == 1, "Top result should be rank 1"
+        assert "why" in top, "Missing Gemini explanation"
+        assert "isochrone_geojson" in top, "Isochrone not forwarded to ranked_results"
+        assert top["isochrone_geojson"] is not None, "Isochrone should not be None"
+        assert top["isochrone_geojson"]["type"] == "FeatureCollection", "Isochrone should be GeoJSON"
+
+        # ── Check Access Analyst score flowed to ranked result ──
+        assert "accessibility_score" in top, "Missing accessibility_score in ranked result"
+        assert top["accessibility_score"] > 0.5, \
+            f"Expected real access score (>0.5), got {top['accessibility_score']}"
+
+        # ── Check Vibe Matcher score flowed to ranked result ──
+        assert "vibe_score" in top, "Missing vibe_score in ranked result"
+        assert top["vibe_score"] is not None, "vibe_score should not be None"
+
+        # ── Check Cost Analyst profile flowed to ranked result ──
+        assert "cost_profile" in top, "Missing cost_profile in ranked result"
+        assert top["cost_profile"]["pricing_confidence"] == "confirmed"
+
+        # ── Verify each agent's raw output in final state ──
+        vibe = final_state.get("vibe_scores", {})
+        assert len(vibe) > 0, "Vibe Matcher produced no scores"
+
+        access = final_state.get("accessibility_scores", {})
+        assert len(access) > 0, "Access Analyst produced no scores"
+        # Scores should reflect the 12-min drive (720s → ~0.96), not fallback 0.5
+        for vid, acc in access.items():
+            assert acc["score"] != 0.5, \
+                f"Venue {vid} got neutral fallback — mock may not have been applied"
+
+        cost = final_state.get("cost_profiles", {})
+        assert len(cost) > 0, "Cost Analyst produced no profiles"
+
+        isochrones = final_state.get("isochrones", {})
+        assert len(isochrones) > 0, "No isochrones in final state"
+
+        assert final_state.get("veto") is False, "Critic should not have vetoed"
+
+        print(f"\n[OK] Full pipeline produced {len(ranked)} ranked result(s):")
+        for r in ranked:
+            print(f"   #{r['rank']}: {r['name']}")
+            print(f"        Vibe={r.get('vibe_score')}, Access={r.get('accessibility_score')}")
+            print(f"        Why: {r.get('why', '')[:80]}")
+            print(f"        Isochrone: {'yes' if r.get('isochrone_geojson') else 'no'}")
