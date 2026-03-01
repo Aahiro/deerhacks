@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 
 const STYLES = `
   @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400&display=swap');
@@ -180,6 +181,12 @@ function Trail() {
 
 export default function Home() {
   const MONO = "'Barlow Condensed', 'Arial Narrow', sans-serif"
+  const router = useRouter()
+
+  function handleGetStarted() {
+    sessionStorage.setItem('fromLanding', '1')
+    router.push('/map')
+  }
 
   return (
     <>
@@ -224,7 +231,7 @@ export default function Home() {
         </div>
 
         <div className="land-4">
-          <Link href="/map" className="cta">Get Started</Link>
+          <button className="cta" onClick={handleGetStarted}>Get Started</button>
         </div>
 
       </main>

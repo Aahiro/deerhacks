@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import SearchBar from './SearchBar'
@@ -112,10 +113,24 @@ function createMarkerEl(rankIdx) {
 }
 
 export default function MapComponent() {
+  const router = useRouter()
   const containerRef = useRef(null)
   const mapRef = useRef(null)
   const wsRef = useRef(null)
   const markersRef = useRef([])
+
+  // Always require passing through the landing page
+  useEffect(() => {
+    const came = sessionStorage.getItem('fromLanding')
+    if (!came) {
+      router.replace('/')
+      return
+    }
+    // Delay removal so React Strict Mode's double-invoke doesn't eat the flag:
+    // cleanup cancels the timer → second run still sees the flag → all good
+    const timer = setTimeout(() => sessionStorage.removeItem('fromLanding'), 200)
+    return () => clearTimeout(timer)
+  }, [])
 
   const [loaded, setLoaded] = useState(false)
   const [center, setCenter] = useState({ lng: -79.3470, lat: 43.6515 })
@@ -239,6 +254,7 @@ export default function MapComponent() {
     const FALLBACK = [-79.3470, 43.6515]  // downtown Toronto
 
     const initMap = ([lng, lat]) => {
+      if (!containerRef.current) return   // guard: container not mounted (e.g. redirecting away)
       setCenter({ lng, lat })
 
       mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN
