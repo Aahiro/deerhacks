@@ -85,7 +85,7 @@ export default function SearchBar({
             padding: 0,
             fontFamily: MONO,
             fontWeight: 300,
-            fontSize: 13,
+            fontSize: 16,
             letterSpacing: '0.04em',
             color: 'rgba(255,255,255,0.88)',
             caretColor: 'rgba(255,255,255,0.65)',

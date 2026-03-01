@@ -108,7 +108,7 @@ export default function AgentRow({ activeAgent, completedAgents = [], dismissed 
                   style={{
                     fontFamily: MONO,
                     fontWeight: 400,
-                    fontSize: 9,
+                    fontSize: 12,
                     letterSpacing: '0.22em',
                     color: isActive ? agent.color : isDone ? agent.color : 'rgba(255,255,255,0.55)',
                     textTransform: 'uppercase',

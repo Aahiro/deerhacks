@@ -7,9 +7,10 @@ import SearchBar from './SearchBar'
 import AgentRow from './AgentRow'
 import AgentSidebar from './AgentSidebar'
 import ResultsSidebar from './ResultsSidebar'
+import Sidebar from './Sidebar'
 
 const GLOBAL_STYLES = `
-  @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400&family=Inter:wght@300;400;500&display=swap');
 
   .mapboxgl-canvas:focus { outline: none; }
   canvas { -webkit-tap-highlight-color: transparent; }
@@ -80,6 +81,7 @@ function Pill({ children, style = {} }) {
 }
 
 const MONO = "'Barlow Condensed', 'Arial Narrow', sans-serif"
+const BODY = "'Inter', -apple-system, 'Segoe UI', sans-serif"
 
 function formatCoord(val, pos, neg) {
   return `${Math.abs(val).toFixed(4)}° ${val >= 0 ? pos : neg}`
@@ -206,11 +208,11 @@ export default function MapComponent() {
       let msg
       try { msg = JSON.parse(event.data) } catch { return }
 
-      if (msg.type === 'progress') {
+      if (msg.type === 'log') {
         setActiveAgent(msg.node)
         setAgentLogs((prev) => [
           ...prev,
-          { agent: msg.node, message: msg.label, time: Date.now() },
+          { agent: msg.node, message: msg.message, time: Date.now() },
         ])
       } else if (msg.type === 'result') {
         setResults(msg.data)
@@ -234,7 +236,7 @@ export default function MapComponent() {
   useEffect(() => {
     if (mapRef.current) return
 
-    const FALLBACK = [-79.3470, 43.6515]
+    const FALLBACK = [-79.3470, 43.6515]  // downtown Toronto
 
     const initMap = ([lng, lat]) => {
       setCenter({ lng, lat })
@@ -370,6 +372,17 @@ export default function MapComponent() {
           }}>
             LOCATR
           </span>
+          <span style={{
+            fontFamily: MONO,
+            fontWeight: 300,
+            marginTop: 30,
+            fontSize: 25,
+            color: 'rgba(28,22,16,0.25)',
+            // textTransform: 'uppercase',
+            // animation: 'locatr-pulse 2.2s ease infinite',
+          }}>
+            just give me a second...
+          </span>
         </div>
 
         {/* Top-center: Search bar */}
@@ -396,7 +409,7 @@ export default function MapComponent() {
               <span style={{
                 fontFamily: MONO,
                 fontWeight: 400,
-                fontSize: 11,
+                fontSize: 13,
                 letterSpacing: '0.40em',
                 color: 'rgba(255,255,255,0.88)',
                 textTransform: 'uppercase',
@@ -408,7 +421,7 @@ export default function MapComponent() {
               <span style={{
                 fontFamily: MONO,
                 fontWeight: 300,
-                fontSize: 11,
+                fontSize: 13,
                 letterSpacing: '0.10em',
                 color: 'rgba(255,255,255,0.58)',
                 fontVariantNumeric: 'tabular-nums',
@@ -422,22 +435,23 @@ export default function MapComponent() {
           </div>
         )}
 
-        {/* AgentSidebar — only while searching */}
-        {searchState === 'searching' && (
-          <AgentSidebar logs={agentLogs} activeAgent={activeAgent} />
-        )}
-
-        {/* ResultsSidebar — once results arrive */}
-        {searchState === 'results' && results && (
-          <ResultsSidebar
-            venues={results.venues}
-            selectedIdx={selectedVenueIdx}
-            onSelect={(i) => {
-              setSelectedVenueIdx(i)
-              const v = results.venues[i]
-              mapRef.current?.flyTo({ center: [v.lng, v.lat], zoom: 15, duration: 900 })
-            }}
-            onNewSearch={handleNewSearch}
+        {/* Sidebar — searching + results */}
+        {searchState !== 'idle' && (
+          <Sidebar
+          searchState={searchState}
+          logs={agentLogs}
+          activeAgent={activeAgent}
+          venues={results?.venues}
+          globalConsensus={results?.global_consensus}
+          selectedIdx={selectedVenueIdx}
+          onSelect={(i) => {
+            setSelectedVenueIdx(i);
+            const v = results?.venues[i];
+            if (v) {
+              mapRef.current?.flyTo({ center: [v.lng, v.lat], zoom: 15, duration: 900 });
+            }
+          }}
+          onNewSearch={handleNewSearch}
           />
         )}
 

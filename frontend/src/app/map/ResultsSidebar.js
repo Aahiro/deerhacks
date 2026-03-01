@@ -1,8 +1,9 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 const MONO = "'Barlow Condensed', 'Arial Narrow', sans-serif"
+const BODY = "'Inter', -apple-system, 'Segoe UI', sans-serif"
 
 const RANK_COLORS = ['#e8c84a', '#b0b8c4', '#c8905a', 'rgba(255,255,255,0.55)']
 
@@ -28,7 +29,7 @@ function RankBadge({ rankIdx }) {
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       flexShrink: 0,
       fontFamily: MONO,
-      fontSize: 11,
+      fontSize: 15,
       fontWeight: 400,
       color,
     }}>
@@ -38,8 +39,7 @@ function RankBadge({ rankIdx }) {
 }
 
 function ScoreChips({ venue }) {
-  const perPerson = venue.cost_profile?.per_person
-  const costLabel = perPerson != null ? `$${Math.round(perPerson)}/pp` : '—'
+  const priceLabel = venue.price_range || '—'
 
   return (
     <div style={{
@@ -49,17 +49,25 @@ function ScoreChips({ venue }) {
       marginTop: 6,
     }}>
       <span style={{
-        fontFamily: MONO, fontWeight: 300, fontSize: 10,
-        letterSpacing: '0.12em', color: '#b06ee0',
+        fontFamily: BODY, fontWeight: 500, fontSize: 12,
+        letterSpacing: '0.04em', color: '#b06ee0',
       }}>
         ◆{venue.vibe_score != null ? venue.vibe_score.toFixed(2) : '—'}
       </span>
       <span style={{
-        fontFamily: MONO, fontWeight: 300, fontSize: 10,
-        letterSpacing: '0.12em', color: '#60a8e0',
+        fontFamily: BODY, fontWeight: 500, fontSize: 12,
+        letterSpacing: '0.04em', color: '#60a8e0',
       }}>
-        ${costLabel}
+        {priceLabel}
       </span>
+      {venue.rating != null && (
+        <span style={{
+          fontFamily: BODY, fontWeight: 500, fontSize: 12,
+          letterSpacing: '0.04em', color: '#e8c84a',
+        }}>
+          ⭐{venue.rating.toFixed(1)}
+        </span>
+      )}
     </div>
   )
 }
@@ -86,7 +94,7 @@ function VenueCard({ venue, rankIdx, isSelected, onSelect }) {
         <span style={{
           fontFamily: MONO,
           fontWeight: 400,
-          fontSize: 13,
+          fontSize: 15,
           letterSpacing: '0.08em',
           color: 'rgba(255,255,255,0.88)',
           flex: 1,
@@ -100,8 +108,8 @@ function VenueCard({ venue, rankIdx, isSelected, onSelect }) {
         {venue.vibe_score != null && (
           <span style={{
             fontFamily: MONO,
-            fontWeight: 300,
-            fontSize: 11,
+            fontWeight: 400,
+            fontSize: 13,
             color: rankColor,
             flexShrink: 0,
           }}>
@@ -113,10 +121,10 @@ function VenueCard({ venue, rankIdx, isSelected, onSelect }) {
       {/* Address */}
       {venue.address && (
         <div style={{
-          fontFamily: MONO,
-          fontWeight: 300,
-          fontSize: 11,
-          letterSpacing: '0.04em',
+          fontFamily: BODY,
+          fontWeight: 400,
+          fontSize: 13,
+          letterSpacing: '0.01em',
           color: 'rgba(255,255,255,0.38)',
           marginTop: 4,
           paddingLeft: 32,
@@ -136,11 +144,12 @@ function VenueCard({ venue, rankIdx, isSelected, onSelect }) {
       {/* Why text */}
       {venue.why && (
         <div style={{
-          fontFamily: MONO,
-          fontWeight: 300,
-          fontSize: 12,
-          letterSpacing: '0.02em',
+          fontFamily: BODY,
+          fontWeight: 400,
+          fontSize: 13,
+          letterSpacing: '0.01em',
           color: 'rgba(255,255,255,0.62)',
+          lineHeight: 1.45,
           marginTop: 8,
           paddingLeft: 32,
           display: '-webkit-box',
@@ -155,10 +164,10 @@ function VenueCard({ venue, rankIdx, isSelected, onSelect }) {
       {/* Watch out */}
       {venue.watch_out && venue.watch_out.trim() !== '' && (
         <div style={{
-          fontFamily: MONO,
-          fontWeight: 300,
-          fontSize: 11,
-          letterSpacing: '0.02em',
+          fontFamily: BODY,
+          fontWeight: 400,
+          fontSize: 13,
+          letterSpacing: '0.01em',
           color: '#e0a060',
           marginTop: 5,
           paddingLeft: 32,
@@ -170,8 +179,37 @@ function VenueCard({ venue, rankIdx, isSelected, onSelect }) {
   )
 }
 
-export default function ResultsSidebar({ venues = [], selectedIdx, onSelect, onNewSearch }) {
+function useResizable(initialWidth, minWidth = 280, maxWidth = 700) {
+  const [width, setWidth] = useState(initialWidth)
+  const dragging = useRef(false)
+
+  useEffect(() => {
+    const onMouseMove = (e) => {
+      if (!dragging.current) return
+      e.preventDefault()
+      setWidth(Math.min(maxWidth, Math.max(minWidth, e.clientX)))
+    }
+    const onMouseUp = () => { dragging.current = false; document.body.style.cursor = '' }
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+    }
+  }, [minWidth, maxWidth])
+
+  const onMouseDown = (e) => {
+    e.preventDefault()
+    dragging.current = true
+    document.body.style.cursor = 'col-resize'
+  }
+
+  return { width, onMouseDown }
+}
+
+export default function ResultsSidebar({ venues = [], globalConsensus, selectedIdx, onSelect, onNewSearch }) {
   const [visible, setVisible] = useState(false)
+  const { width, onMouseDown } = useResizable(400)
 
   useEffect(() => {
     requestAnimationFrame(() => setVisible(true))
@@ -187,7 +225,7 @@ export default function ResultsSidebar({ venues = [], selectedIdx, onSelect, onN
           top: 0,
           left: 0,
           bottom: 0,
-          width: 320,
+          width: width,
           background: 'rgba(14, 12, 10, 0.85)',
           backdropFilter: 'blur(20px)',
           WebkitBackdropFilter: 'blur(20px)',
@@ -203,7 +241,7 @@ export default function ResultsSidebar({ venues = [], selectedIdx, onSelect, onN
           <span style={{
             fontFamily: MONO,
             fontWeight: 400,
-            fontSize: 13,
+            fontSize: 15,
             letterSpacing: '0.32em',
             color: 'rgba(255,255,255,0.88)',
             textTransform: 'uppercase',
@@ -212,10 +250,10 @@ export default function ResultsSidebar({ venues = [], selectedIdx, onSelect, onN
             RESULTS
           </span>
           <span style={{
-            fontFamily: MONO,
-            fontWeight: 300,
-            fontSize: 11,
-            letterSpacing: '0.06em',
+            fontFamily: BODY,
+            fontWeight: 400,
+            fontSize: 13,
+            letterSpacing: '0.02em',
             color: 'rgba(255,255,255,0.40)',
             display: 'block',
             marginTop: 4,
@@ -223,6 +261,21 @@ export default function ResultsSidebar({ venues = [], selectedIdx, onSelect, onN
             {venues.length} venue{venues.length !== 1 ? 's' : ''} found
           </span>
         </div>
+
+        {/* Global consensus */}
+        {globalConsensus && (
+          <div style={{
+            padding: '0 20px 12px',
+            fontFamily: BODY,
+            fontWeight: 400,
+            fontSize: 13,
+            letterSpacing: '0.01em',
+            lineHeight: 1.55,
+            color: 'rgba(255,255,255,0.55)',
+          }}>
+            {globalConsensus}
+          </div>
+        )}
 
         {/* Divider */}
         <div style={{ height: 1, background: 'rgba(255,255,255,0.06)', margin: '0 20px', flexShrink: 0 }} />
@@ -267,7 +320,7 @@ export default function ResultsSidebar({ venues = [], selectedIdx, onSelect, onN
                 cursor: 'pointer',
                 fontFamily: MONO,
                 fontWeight: 400,
-                fontSize: 11,
+                fontSize: 15,
                 letterSpacing: '0.28em',
                 color: 'rgba(255,255,255,0.55)',
                 textTransform: 'uppercase',
@@ -285,6 +338,40 @@ export default function ResultsSidebar({ venues = [], selectedIdx, onSelect, onN
               NEW SEARCH
             </button>
           </div>
+        </div>
+      </div>
+
+      {/* Drag handle — rendered outside sidebar to avoid overflow:hidden clipping */}
+      <div
+        onMouseDown={onMouseDown}
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: width - 5,
+          bottom: 0,
+          width: 10,
+          cursor: 'col-resize',
+          zIndex: 16,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <div style={{
+          width: 24,
+          height: 40,
+          borderRadius: 5,
+          background: 'rgba(50,50,50,1)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          userSelect: 'none',
+          pointerEvents: 'none',
+        }}>
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none">
+            <path d="M4.5 3L1 7L4.5 11" stroke="rgba(255,255,255,0.45)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            <path d="M9.5 3L13 7L9.5 11" stroke="rgba(255,255,255,0.45)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
         </div>
       </div>
     </>
