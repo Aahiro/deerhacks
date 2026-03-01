@@ -244,6 +244,17 @@ def synthesiser_node(state: PathfinderState) -> PathfinderState:
         vibe_entry = vibe_scores.get(vid, {})
         cost_entry = cost_profiles.get(vid, {})
 
+        # Build cost_profile in the shape the frontend expects
+        cost_profile = {
+            "price_range": cost_entry.get("price_range"),
+            "confidence": cost_entry.get("confidence", "none"),
+            "value_score": cost_entry.get("value_score", 0.3),
+            # per_person is not available from the heuristic cost analyst;
+            # keep the key present so frontend null-checks pass gracefully
+            "per_person": None,
+            "pricing_confidence": cost_entry.get("confidence", "none"),
+        }
+
         ranked_results.append({
             "rank": rank,
             "name": venue.get("name", "Unknown"),
@@ -251,8 +262,15 @@ def synthesiser_node(state: PathfinderState) -> PathfinderState:
             "lat": venue.get("lat", 0.0),
             "lng": venue.get("lng", 0.0),
             "vibe_score": vibe_entry.get("vibe_score"),
+            # Flat fields (new shape)
             "price_range": cost_entry.get("price_range"),
             "price_confidence": cost_entry.get("confidence", "none"),
+            # Nested cost_profile for frontend backwards-compatibility
+            "cost_profile": cost_profile,
+            # accessibility_score is null (access_analyst removed upstream)
+            "accessibility_score": None,
+            # isochrone_geojson kept as None; frontend null-checks handle it
+            "isochrone_geojson": None,
             "why": explanation.get("why", ""),
             "watch_out": explanation.get("watch_out", ""),
         })
