@@ -26,12 +26,14 @@ function SearchIcon({ size = 13, color = 'currentColor' }) {
 export default function SearchBar({
   onSearch = () => {},
   placeholder = "search 'basketball courts in downtown TO for 10 people at 5pm'",
+  disabled = false,
 }) {
   const [query, setQuery] = useState('')
   const [focused, setFocused] = useState(false)
 
   const handleSubmit = (e) => {
     e?.preventDefault()
+    if (disabled) return
     const trimmed = query.trim()
     if (trimmed) onSearch(trimmed)
   }
@@ -59,6 +61,8 @@ export default function SearchBar({
             : '0 2px 16px rgba(0,0,0,0.22)',
           transition: 'background 0.22s cubic-bezier(0.16,1,0.3,1), border 0.22s cubic-bezier(0.16,1,0.3,1), box-shadow 0.22s cubic-bezier(0.16,1,0.3,1)',
           boxSizing: 'border-box',
+          opacity: disabled ? 0.5 : 1,
+          pointerEvents: disabled ? 'none' : 'auto',
         }}
       >
         <SearchIcon

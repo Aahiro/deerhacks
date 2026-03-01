@@ -4,6 +4,9 @@ import { useEffect, useRef, useState } from 'react'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import SearchBar from './SearchBar'
+import AgentRow from './AgentRow'
+import AgentSidebar from './AgentSidebar'
+import ResultsSidebar from './ResultsSidebar'
 
 const GLOBAL_STYLES = `
   @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400&display=swap');
@@ -82,11 +85,151 @@ function formatCoord(val, pos, neg) {
   return `${Math.abs(val).toFixed(4)}° ${val >= 0 ? pos : neg}`
 }
 
+function createMarkerEl(rankIdx) {
+  const COLORS = ['#e8c84a', '#b0b8c4', '#c8905a', 'rgba(255,255,255,0.55)']
+  const color  = COLORS[Math.min(rankIdx, 3)]
+  const size   = rankIdx === 0 ? 36 : 28
+  const el     = document.createElement('div')
+  el.dataset.rank = rankIdx
+  Object.assign(el.style, {
+    width: `${size}px`, height: `${size}px`,
+    borderRadius: '50%',
+    background: 'rgba(14,12,10,0.88)',
+    border: `2px solid ${color}`,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    cursor: 'pointer',
+    fontFamily: "'Barlow Condensed', sans-serif",
+    fontSize: `${rankIdx === 0 ? 15 : 12}px`,
+    fontWeight: '400', color,
+    boxShadow: `0 0 ${rankIdx === 0 ? '14px 4px' : '8px 2px'} ${color}66`,
+    transition: 'transform 0.2s ease, box-shadow 0.2s ease',
+    userSelect: 'none', pointerEvents: 'auto',
+  })
+  el.textContent = String(rankIdx + 1)
+  return el
+}
+
 export default function MapComponent() {
   const containerRef = useRef(null)
   const mapRef = useRef(null)
+  const wsRef = useRef(null)
+  const markersRef = useRef([])
+
   const [loaded, setLoaded] = useState(false)
   const [center, setCenter] = useState({ lng: -79.3470, lat: 43.6515 })
+
+  // Search state: 'idle' | 'searching' | 'results'
+  const [searchState, setSearchState] = useState('idle')
+  const [activeAgent, setActiveAgent] = useState(null)
+  const [agentLogs, setAgentLogs] = useState([])
+  const [results, setResults] = useState(null)
+  const [selectedVenueIdx, setSelectedVenueIdx] = useState(0)
+
+  // WS cleanup on unmount
+  useEffect(() => {
+    return () => {
+      wsRef.current?.close()
+    }
+  }, [])
+
+  // Highlight selected marker
+  useEffect(() => {
+    markersRef.current.forEach((m, i) => {
+      const el = m.getElement()
+      if (i === selectedVenueIdx) {
+        el.style.transform = 'scale(1.2)'
+        el.style.outline = '2px solid rgba(255,255,255,0.50)'
+        el.style.outlineOffset = '2px'
+      } else {
+        el.style.transform = 'scale(1)'
+        el.style.outline = 'none'
+      }
+    })
+  }, [selectedVenueIdx])
+
+  // Spawn markers + auto-fly when results arrive
+  useEffect(() => {
+    if (!results || !mapRef.current) return
+    const venues = results.venues ?? []
+
+    markersRef.current.forEach(m => m.remove())
+    markersRef.current = []
+    setSelectedVenueIdx(0)
+
+    venues.forEach((venue, i) => {
+      const el = createMarkerEl(i)
+      const marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
+        .setLngLat([venue.lng, venue.lat])
+        .addTo(mapRef.current)
+      el.addEventListener('click', () => {
+        setSelectedVenueIdx(i)
+        mapRef.current.flyTo({ center: [venue.lng, venue.lat], zoom: 15, duration: 900 })
+      })
+      markersRef.current.push(marker)
+    })
+
+    if (venues.length > 0) {
+      mapRef.current.flyTo({
+        center: [venues[0].lng, venues[0].lat],
+        zoom: 15, pitch: 45, bearing: -17.6, duration: 1400,
+      })
+    }
+  }, [results])
+
+  const handleNewSearch = () => {
+    markersRef.current.forEach(m => m.remove())
+    markersRef.current = []
+    setResults(null)
+    setSearchState('idle')
+    setAgentLogs([])
+    setActiveAgent(null)
+    setSelectedVenueIdx(0)
+  }
+
+  const handleSearch = (query) => {
+    markersRef.current.forEach(m => m.remove())
+    markersRef.current = []
+    setSearchState('searching')
+    setActiveAgent(null)
+    setAgentLogs([])
+    setResults(null)
+
+    const wsUrl = (process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:8000') + '/api/ws/plan'
+    const ws = new WebSocket(wsUrl)
+    wsRef.current = ws
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({ prompt: query, member_locations: [] }))
+    }
+
+    ws.onmessage = (event) => {
+      let msg
+      try { msg = JSON.parse(event.data) } catch { return }
+
+      if (msg.type === 'progress') {
+        setActiveAgent(msg.node)
+        setAgentLogs((prev) => [
+          ...prev,
+          { agent: msg.node, message: msg.label, time: Date.now() },
+        ])
+      } else if (msg.type === 'result') {
+        setResults(msg.data)
+        setSearchState('results')
+        setActiveAgent(null)
+        ws.close()
+      }
+    }
+
+    ws.onerror = () => {
+      setSearchState('idle')
+    }
+
+    ws.onclose = (e) => {
+      if (searchState === 'searching' && !e.wasClean) {
+        setSearchState('idle')
+      }
+    }
+  }
 
   useEffect(() => {
     if (mapRef.current) return
@@ -101,7 +244,6 @@ export default function MapComponent() {
       const map = new mapboxgl.Map({
         container: containerRef.current,
         style: 'mapbox://styles/mapbox/dark-v11',
-        // style: 'mapbox://styles/mapbox/standard-satellite',
         center: [lng, lat],
         zoom: 14,
         pitch: 45,
@@ -176,13 +318,13 @@ export default function MapComponent() {
       initMap(FALLBACK)
     }
 
-    initMap(FALLBACK)
-
     return () => {
       mapRef.current?.remove()
       mapRef.current = null
     }
   }, [])
+
+  const completedAgents = [...new Set(agentLogs.map((l) => l.agent))]
 
   return (
     <>
@@ -216,11 +358,11 @@ export default function MapComponent() {
           pointerEvents: loaded ? 'none' : 'all',
           zIndex: 30,
         }}>
-          <CrosshairIcon size={18} color="rgba(28,22,16,0.22)" />
+          <CrosshairIcon size={50} color="rgba(28,22,16,0.22)" />
           <span style={{
             fontFamily: MONO,
             fontWeight: 300,
-            fontSize: 10,
+            fontSize: 50,
             letterSpacing: '0.48em',
             color: 'rgba(28,22,16,0.40)',
             textTransform: 'uppercase',
@@ -239,7 +381,10 @@ export default function MapComponent() {
             transform: 'translateX(-50%)',
             zIndex: 10,
           }}>
-            <SearchBar onSearch={() => {}} />
+            <SearchBar
+              onSearch={handleSearch}
+              disabled={searchState === 'searching'}
+            />
           </div>
         )}
 
@@ -275,6 +420,34 @@ export default function MapComponent() {
               </span>
             </Pill>
           </div>
+        )}
+
+        {/* AgentSidebar — only while searching */}
+        {searchState === 'searching' && (
+          <AgentSidebar logs={agentLogs} activeAgent={activeAgent} />
+        )}
+
+        {/* ResultsSidebar — once results arrive */}
+        {searchState === 'results' && results && (
+          <ResultsSidebar
+            venues={results.venues}
+            selectedIdx={selectedVenueIdx}
+            onSelect={(i) => {
+              setSelectedVenueIdx(i)
+              const v = results.venues[i]
+              mapRef.current?.flyTo({ center: [v.lng, v.lat], zoom: 15, duration: 900 })
+            }}
+            onNewSearch={handleNewSearch}
+          />
+        )}
+
+        {/* AgentRow — searching + results (dismissed when results arrive) */}
+        {searchState !== 'idle' && (
+          <AgentRow
+            activeAgent={activeAgent}
+            completedAgents={completedAgents}
+            dismissed={searchState === 'results'}
+          />
         )}
 
       </div>
