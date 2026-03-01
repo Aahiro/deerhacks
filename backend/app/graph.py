@@ -2,8 +2,10 @@
 LangGraph workflow — assembles all agent nodes into the PATHFINDER graph.
 """
 
-from langgraph.graph import StateGraph, END
 import asyncio
+import logging
+
+from langgraph.graph import StateGraph, END
 
 from app.models.state import PathfinderState
 from app.agents.commander import commander_node
@@ -12,6 +14,8 @@ from app.agents.vibe_matcher import vibe_matcher_node
 from app.agents.cost_analyst import cost_analyst_node
 from app.agents.critic import critic_node
 from app.agents.synthesiser import synthesiser_node
+
+logger = logging.getLogger(__name__)
 
 
 def _should_retry(state: PathfinderState) -> str:
@@ -23,41 +27,62 @@ def _should_retry(state: PathfinderState) -> str:
 
 async def parallel_analysts_node(state: PathfinderState) -> PathfinderState:
     """
-    Runs the Vibe Matcher, Cost Analyst, and Critic concurrently.
-    Merges their returned states.
-    If the Critic returns early with fast_fail, it overrides remaining long-running tasks.
+    Runs Vibe Matcher, Cost Analyst, and Critic concurrently with per-agent timeouts.
+
+    - vibe_matcher and critic are async — called directly (no thread wrapping needed).
+    - cost_analyst is pure-sync — wrapped in asyncio.to_thread().
+    - Each agent gets 45 s; any agent that times out or throws returns a safe
+      empty fallback so the pipeline always reaches the Synthesiser.
     """
     active = state.get("active_agents", [])
-    
-    # Define mapping of agent names to their node functions
-    agent_map = {
-        "vibe_matcher": vibe_matcher_node,
-        "cost_analyst": cost_analyst_node,
-        "critic": critic_node
-    }
 
-    # Determine which analysts to run
-    tasks = []
-    # Always spawn in thread so we don't block the async event loop with sync code
-    for name, func in agent_map.items():
-        if not active or name in active:
-            # Pass a shallow copy so mutations don't corrupt the loop state if they modify `state` directly
-            tasks.append(asyncio.to_thread(func, state.copy()))
+    # ── Build tasks ──────────────────────────────────────────────────────────
+    tasks: list = []
+    task_names: list = []
+
+    if not active or "vibe_matcher" in active:
+        tasks.append(asyncio.wait_for(vibe_matcher_node(state.copy()), timeout=45.0))
+        task_names.append("vibe_matcher")
+
+    if not active or "critic" in active:
+        tasks.append(asyncio.wait_for(critic_node(state.copy()), timeout=45.0))
+        task_names.append("critic")
+
+    # cost_analyst is synchronous — run in a thread so it never blocks the event loop
+    if not active or "cost_analyst" in active:
+        tasks.append(
+            asyncio.wait_for(asyncio.to_thread(cost_analyst_node, state.copy()), timeout=10.0)
+        )
+        task_names.append("cost_analyst")
 
     if not tasks:
         return {}
 
-    # Run them all concurrently
+    # ── Run concurrently ─────────────────────────────────────────────────────
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Merge returned state updates
-    merged_state = {}
-    for res in results:
+    # ── Merge state; provide safe fallbacks for any failed agent ─────────────
+    merged_state: dict = {}
+    for name, res in zip(task_names, results):
         if isinstance(res, Exception):
-            import logging
-            logging.getLogger(__name__).error("Parallel analyst failed: %s", res)
-            continue
-        if isinstance(res, dict):
+            logger.error(
+                "Analyst '%s' failed (%s: %s) — using fallback state",
+                name,
+                type(res).__name__,
+                res,
+            )
+            # Graceful fallback so Synthesiser always has keys to read
+            if name == "vibe_matcher":
+                merged_state.setdefault("vibe_scores", {})
+            elif name == "cost_analyst":
+                merged_state.setdefault("cost_profiles", {})
+            elif name == "critic":
+                merged_state.setdefault("risk_flags", {})
+                merged_state.setdefault("fast_fail", False)
+                merged_state.setdefault("fast_fail_reason", None)
+                merged_state.setdefault("veto", False)
+                merged_state.setdefault("veto_reason", None)
+        elif isinstance(res, dict):
             merged_state.update(res)
 
     return merged_state
@@ -71,16 +96,16 @@ def build_graph() -> StateGraph:
     # ── Register nodes ──
     graph.add_node("commander", commander_node)
     graph.add_node("scout", scout_node)
-    
+
     # ── Instead of 4 sequential nodes, we use the unified parallel runner ──
     graph.add_node("parallel_analysts", parallel_analysts_node)
-    
+
     graph.add_node("synthesiser", synthesiser_node)
 
     # ── Define edges ──
     graph.set_entry_point("commander")
     graph.add_edge("commander", "scout")
-    
+
     # Fan out to analysts running concurrently
     graph.add_edge("scout", "parallel_analysts")
 

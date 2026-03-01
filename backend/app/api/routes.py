@@ -2,10 +2,11 @@
 PATHFINDER API routes.
 """
 
+import asyncio
 import io
 import logging
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -15,13 +16,26 @@ from app.schemas import PlanRequest, PlanResponse
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Maximum time (seconds) the full pipeline may run before we give up
+_PIPELINE_TIMEOUT = 120.0
+
+NODE_LABELS = {
+    "commander": "Parsing your request...",
+    "scout": "Discovering venues...",
+    "parallel_analysts": "Analysing vibes, cost & risks...",
+    "vibe_matcher": "Analysing vibes...",
+    "cost_analyst": "Calculating costs...",
+    "critic": "Running risk assessment...",
+    "synthesiser": "Ranking results...",
+}
+
 
 @router.post("/plan", response_model=PlanResponse)
 async def create_plan(request: PlanRequest):
     """
     Accept a natural-language activity request and return ranked venues.
 
-    Flow: prompt → Commander → Scout → [Vibe, Access, Cost] → Critic → Synthesiser → results
+    Flow: prompt → Commander → Scout → [Vibe, Cost, Critic] → Synthesiser → results
     """
     from app.graph import pathfinder_graph
 
@@ -42,12 +56,10 @@ async def create_plan(request: PlanRequest):
         "retry_count": 0,
         "ranked_results": [],
         "snowflake_context": None,
-        # Forward request params for agents to use
         "member_locations": request.member_locations or [],
         "chat_history": request.chat_history or [],
     }
 
-    # Inject explicit fields into parsed_intent if provided
     if request.group_size > 1 or request.budget or request.location or request.vibe:
         initial_state["parsed_intent"] = {
             "group_size": request.group_size,
@@ -56,8 +68,17 @@ async def create_plan(request: PlanRequest):
             "vibe": request.vibe,
         }
 
-    # Run the full LangGraph workflow
-    result = await pathfinder_graph.ainvoke(initial_state)
+    try:
+        result = await asyncio.wait_for(
+            pathfinder_graph.ainvoke(initial_state),
+            timeout=_PIPELINE_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.error("Pipeline timed out after %ss for prompt: %s", _PIPELINE_TIMEOUT, request.prompt)
+        raise HTTPException(status_code=504, detail="Pipeline timed out — please try again.")
+    except Exception as exc:
+        logger.error("Pipeline error for prompt '%s': %s", request.prompt, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Pipeline failed — please try again.")
 
     return PlanResponse(
         venues=result.get("ranked_results", []),
@@ -68,11 +89,15 @@ async def create_plan(request: PlanRequest):
 @router.websocket("/ws/plan")
 async def websocket_plan(websocket: WebSocket):
     from app.graph import pathfinder_graph
+
     await websocket.accept()
     try:
         data = await websocket.receive_json()
+        prompt = data.get("prompt", "")
+        logger.info("WS pipeline starting for prompt: %s", prompt)
+
         initial_state = {
-            "raw_prompt": data.get("prompt", ""),
+            "raw_prompt": prompt,
             "parsed_intent": {},
             "complexity_tier": "tier_2",
             "active_agents": [],
@@ -89,23 +114,39 @@ async def websocket_plan(websocket: WebSocket):
             "ranked_results": [],
             "member_locations": data.get("member_locations", []),
         }
-        NODE_LABELS = {
-            "commander": "Parsing your request...",
-            "scout": "Discovering venues...",
-            "vibe_matcher": "Analyzing vibes...",
-            "cost_analyst": "Calculating costs...",
-            "critic": "Running risk assessment...",
-            "synthesiser": "Ranking results...",
-        }
+
         accumulated = {**initial_state}
-        async for event in pathfinder_graph.astream(initial_state):
-            node_name = list(event.keys())[0]
-            accumulated.update(event[node_name])
+
+        async def _run_pipeline():
+            async for event in pathfinder_graph.astream(initial_state):
+                node_name = list(event.keys())[0]
+                node_data = event[node_name] or {}
+                accumulated.update(node_data)
+                logger.info("WS node complete: %s", node_name)
+                await websocket.send_json({
+                    "type": "progress",
+                    "node": node_name,
+                    "label": NODE_LABELS.get(node_name, node_name),
+                })
+
+        try:
+            await asyncio.wait_for(_run_pipeline(), timeout=_PIPELINE_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.error("WS pipeline timed out after %ss for: %s", _PIPELINE_TIMEOUT, prompt)
             await websocket.send_json({
-                "type": "progress",
-                "node": node_name,
-                "label": NODE_LABELS.get(node_name, node_name),
+                "type": "error",
+                "message": "Pipeline timed out — please try a simpler query.",
             })
+            return
+        except Exception as exc:
+            logger.error("WS pipeline error for '%s': %s", prompt, exc, exc_info=True)
+            await websocket.send_json({
+                "type": "error",
+                "message": "An internal error occurred. Please try again.",
+            })
+            return
+
+        # Always send the final result — even if ranked_results is empty
         await websocket.send_json({
             "type": "result",
             "data": PlanResponse(
@@ -113,8 +154,16 @@ async def websocket_plan(websocket: WebSocket):
                 execution_summary="Pipeline complete.",
             ).model_dump(),
         })
+        logger.info("WS pipeline complete — %d venues returned", len(accumulated.get("ranked_results", [])))
+
     except WebSocketDisconnect:
-        pass
+        logger.info("WS client disconnected")
+    except Exception as exc:
+        logger.error("Unexpected WS error: %s", exc, exc_info=True)
+        try:
+            await websocket.send_json({"type": "error", "message": "Unexpected server error."})
+        except Exception:
+            pass
     finally:
         try:
             await websocket.close()

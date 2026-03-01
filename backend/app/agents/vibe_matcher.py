@@ -78,14 +78,14 @@ async def _score_venue(venue: dict, vibe_preference: str) -> dict | None:
         return None
 
 
-def vibe_matcher_node(state: PathfinderState) -> PathfinderState:
+async def vibe_matcher_node(state: PathfinderState) -> PathfinderState:
     """
     Score each candidate venue on subjective vibe / aesthetic match.
 
     Steps
     -----
     1. Get vibe preference from parsed_intent (or use neutral default).
-    2. For each candidate, call Gemini 1.5 Pro with photos + prompt.
+    2. For each candidate, call Gemini with photos + prompt (concurrently).
     3. Parse JSON response into vibe scores.
     4. Write vibe_scores dict to state.
     """
@@ -97,15 +97,19 @@ def vibe_matcher_node(state: PathfinderState) -> PathfinderState:
         logger.info("Vibe Matcher: no candidates to score")
         return {"vibe_scores": {}}
 
-    # Score all venues concurrently
-    async def _score_all():
-        return await asyncio.gather(*[_score_venue(v, vibe_pref) for v in candidates])
-
+    # Score all venues concurrently — 20s per venue, return_exceptions so one
+    # slow/failed Gemini call doesn't kill the whole batch.
     try:
-        results = asyncio.run(_score_all())
+        raw = await asyncio.gather(
+            *[asyncio.wait_for(_score_venue(v, vibe_pref), timeout=20.0) for v in candidates],
+            return_exceptions=True,
+        )
     except Exception as exc:
-        logger.error("Vibe Matcher failed: %s", exc)
-        results = [None] * len(candidates)
+        logger.error("Vibe Matcher gather failed: %s", exc)
+        raw = [None] * len(candidates)
+
+    # Normalise exceptions → None
+    results = [None if isinstance(r, Exception) else r for r in raw]
 
     # Build vibe_scores dict keyed by venue_id and filter candidates
     vibe_scores = {}

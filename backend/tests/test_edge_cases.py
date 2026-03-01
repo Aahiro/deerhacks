@@ -152,7 +152,7 @@ class TestVibeMatcherEdgeCases:
 
     def test_no_candidates_returns_empty(self):
         from app.agents.vibe_matcher import vibe_matcher_node
-        result = vibe_matcher_node({"candidate_venues": [], "parsed_intent": {}})
+        result = asyncio.run(vibe_matcher_node({"candidate_venues": [], "parsed_intent": {}}))
         assert result["vibe_scores"] == {}
 
     @patch("app.agents.vibe_matcher.generate_content", new_callable=AsyncMock)
@@ -163,7 +163,7 @@ class TestVibeMatcherEdgeCases:
             "candidate_venues": [{"venue_id": "v1", "name": "Test", "address": "123 St", "category": "cafe", "photos": []}],
             "parsed_intent": {"vibe": "cozy"},
         }
-        result = vibe_matcher_node(state)
+        result = asyncio.run(vibe_matcher_node(state))
         # Should not crash, should return fallback score (vibe_score key, not score)
         assert "v1" in result["vibe_scores"]
         assert result["vibe_scores"]["v1"]["vibe_score"] is None
@@ -176,7 +176,7 @@ class TestVibeMatcherEdgeCases:
             "candidate_venues": [{"venue_id": "v1", "name": "Test", "address": "123 St", "category": "cafe", "photos": []}],
             "parsed_intent": {},
         }
-        result = vibe_matcher_node(state)
+        result = asyncio.run(vibe_matcher_node(state))
         assert "v1" in result["vibe_scores"]
         assert result["vibe_scores"]["v1"]["confidence"] == 0.0
 
@@ -192,7 +192,7 @@ class TestVibeMatcherEdgeCases:
             "candidate_venues": [{"venue_id": "v1", "name": "Princess Cafe", "address": "1 Main St", "category": "cafe", "photos": []}],
             "parsed_intent": {"vibe": "cozy"},
         }
-        result = vibe_matcher_node(state)
+        result = asyncio.run(vibe_matcher_node(state))
         assert result["vibe_scores"]["v1"]["vibe_score"] == 0.87
         assert result["vibe_scores"]["v1"]["primary_style"] == "cozy"
 
@@ -300,7 +300,7 @@ class TestCriticEdgeCases:
 
     def test_no_candidates_returns_no_veto(self):
         from app.agents.critic import critic_node
-        result = critic_node({"candidate_venues": [], "parsed_intent": {}})
+        result = asyncio.run(critic_node({"candidate_venues": [], "parsed_intent": {}}))
         assert result["veto"] is False
         assert result["risk_flags"] == {}
 
@@ -320,7 +320,7 @@ class TestCriticEdgeCases:
             {"venue_id": "v1", "name": "Outdoor Park", "category": "park", "lat": 43.65, "lng": -79.38},
             {"venue_id": "v2", "name": "Indoor Gym", "category": "gym", "lat": 43.66, "lng": -79.39},
         ]
-        result = critic_node({"candidate_venues": venues, "parsed_intent": {"activity": "outdoor"}})
+        result = asyncio.run(critic_node({"candidate_venues": venues, "parsed_intent": {"activity": "outdoor"}}))
         # Critic maps fast_fail → veto in return state
         assert result["veto"] is True  # v1 is #1 candidate and got fast_fail/vetoed
         assert result["veto_reason"] == "Rain"
@@ -337,7 +337,7 @@ class TestCriticEdgeCases:
             "candidate_venues": [{"venue_id": "v1", "name": "Great Spot", "category": "cafe", "lat": 43.65, "lng": -79.38}],
             "parsed_intent": {},
         }
-        result = critic_node(state)
+        result = asyncio.run(critic_node(state))
         assert result["veto"] is False
 
     @patch("app.agents.critic.generate_content", new_callable=AsyncMock)
@@ -352,7 +352,7 @@ class TestCriticEdgeCases:
             "candidate_venues": [{"venue_id": "v1", "name": "Place", "category": "cafe", "lat": 43.65, "lng": -79.38}],
             "parsed_intent": {},
         }
-        result = critic_node(state)
+        result = asyncio.run(critic_node(state))
         assert result["veto"] is False  # graceful fallback
         assert "v1" in result["risk_flags"]
 
@@ -607,15 +607,14 @@ class TestFullPipelineAllAgents:
         })
 
         # ── Run the full graph ──
-        # parallel_analysts_node is async, so we must use ainvoke (not sync invoke)
+        # Agents are now proper async def — no nest_asyncio needed.
+        # asyncio.run() creates a clean event loop and awaits ainvoke().
         state = PathfinderState(
             raw_prompt="I need an escape room for 4 people in downtown Toronto this Saturday.",
             veto=False,
             fast_fail=False,
             retry_count=0,
         )
-        import nest_asyncio
-        nest_asyncio.apply()
         final_state = asyncio.run(pathfinder_graph.ainvoke(state))
 
         # ── Assertions: pipeline produced results ──

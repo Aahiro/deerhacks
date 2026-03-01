@@ -3,6 +3,8 @@ Gemini API service — thin wrapper for Google Gemini calls.
 Uses the GOOGLE_CLOUD_API_KEY for authentication.
 """
 
+import asyncio
+import base64
 import logging
 from typing import Optional
 
@@ -14,6 +16,20 @@ logger = logging.getLogger(__name__)
 
 # Gemini 1.5 Flash for fast tasks, Pro for multimodal
 _GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+
+
+async def _fetch_image_part(img_url: str) -> Optional[dict]:
+    """Fetch a single image and return a Gemini inline_data part, or None on failure."""
+    try:
+        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+            img_resp = await client.get(img_url)
+            img_resp.raise_for_status()
+            img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
+            content_type = img_resp.headers.get("content-type", "image/jpeg")
+            return {"inline_data": {"mime_type": content_type, "data": img_b64}}
+    except Exception as exc:
+        logger.warning("Failed to fetch image %s: %s", img_url, exc)
+        return None
 
 
 async def generate_content(
@@ -31,7 +47,7 @@ async def generate_content(
     model : str
         Model name (default: gemini-2.5-flash).
     image_urls : list[str] | None
-        Optional image URLs for multimodal input.
+        Optional image URLs for multimodal input. Fetched in parallel (≤3 images).
 
     Returns
     -------
@@ -43,30 +59,16 @@ async def generate_content(
 
     url = f"{_GEMINI_BASE}/{model}:generateContent?key={settings.GOOGLE_CLOUD_API_KEY}"
 
-    # Build parts list
-    parts = []
-
-    # Add images if provided (multimodal)
+    # ── Fetch images in parallel (was sequential — up to 30 s; now ≤8 s) ──
+    parts: list[dict] = []
     if image_urls:
-        for img_url in image_urls[:3]:  # limit to 3 images to stay frugal
-            try:
-                async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                    img_resp = await client.get(img_url)
-                    img_resp.raise_for_status()
-                    import base64
-                    img_b64 = base64.b64encode(img_resp.content).decode("utf-8")
-                    # Detect content type
-                    content_type = img_resp.headers.get("content-type", "image/jpeg")
-                    parts.append({
-                        "inline_data": {
-                            "mime_type": content_type,
-                            "data": img_b64,
-                        }
-                    })
-            except Exception as exc:
-                logger.warning("Failed to fetch image %s: %s", img_url, exc)
+        img_results = await asyncio.gather(
+            *[_fetch_image_part(u) for u in image_urls[:3]],
+            return_exceptions=True,
+        )
+        parts = [r for r in img_results if isinstance(r, dict)]
 
-    # Add text prompt
+    # Add text prompt last
     parts.append({"text": prompt})
 
     body = {

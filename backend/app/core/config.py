@@ -23,9 +23,6 @@ class Settings(BaseSettings):
     # ── PredictHQ ──
     PREDICTHQ_API_KEY: str = ""
 
-    # ── CORS ──
-    CORS_ORIGINS: List[str] = ["http://localhost:3000"]
-
     # ── Redis ──
     REDIS_URL: str = "redis://localhost:6379/0"
 
