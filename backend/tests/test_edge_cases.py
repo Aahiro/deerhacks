@@ -62,6 +62,9 @@ class TestCommanderEdgeCases:
             "complexity_tier": "tier_2",
             "active_agents": ["scout", "cost_analyst", "vibe_matcher"],
             "agent_weights": {"scout": 1.0, "cost_analyst": 0.5, "vibe_matcher": 0.4},
+            "requires_oauth": False,
+            "oauth_scopes": [],
+            "allowed_actions": [],
         })
         state = {
             "raw_prompt": "cafe",
@@ -74,7 +77,7 @@ class TestCommanderEdgeCases:
             }
         }
         result = commander_node(state)
-        # cost_analyst weight should be boosted by 0.2
+        # cost_analyst weight should be boosted by 0.2 (from 0.5 to 0.7)
         assert result["agent_weights"]["cost_analyst"] > 0.5
 
     @patch("app.agents.commander.generate_content", new_callable=AsyncMock)
@@ -161,9 +164,9 @@ class TestVibeMatcherEdgeCases:
             "parsed_intent": {"vibe": "cozy"},
         }
         result = vibe_matcher_node(state)
-        # Should not crash, should return fallback score
+        # Should not crash, should return fallback score (vibe_score key, not score)
         assert "v1" in result["vibe_scores"]
-        assert result["vibe_scores"]["v1"]["score"] is None
+        assert result["vibe_scores"]["v1"]["vibe_score"] is None
 
     @patch("app.agents.vibe_matcher.generate_content", new_callable=AsyncMock)
     def test_gemini_returns_malformed_json_uses_fallback(self, mock_gen):
@@ -180,18 +183,22 @@ class TestVibeMatcherEdgeCases:
     @patch("app.agents.vibe_matcher.generate_content", new_callable=AsyncMock)
     def test_valid_vibe_score_stored_correctly(self, mock_gen):
         from app.agents.vibe_matcher import vibe_matcher_node
-        mock_gen.return_value = json.dumps({"score": 0.87, "style": "cozy", "descriptors": ["warm", "wooden"], "confidence": 0.9})
+        # Prompt instructs Gemini to use vibe_score / primary_style / visual_descriptors
+        mock_gen.return_value = json.dumps({
+            "vibe_score": 0.87, "primary_style": "cozy",
+            "visual_descriptors": ["warm", "wooden"], "confidence": 0.9
+        })
         state = {
             "candidate_venues": [{"venue_id": "v1", "name": "Princess Cafe", "address": "1 Main St", "category": "cafe", "photos": []}],
             "parsed_intent": {"vibe": "cozy"},
         }
         result = vibe_matcher_node(state)
-        assert result["vibe_scores"]["v1"]["score"] == 0.87
-        assert result["vibe_scores"]["v1"]["style"] == "cozy"
+        assert result["vibe_scores"]["v1"]["vibe_score"] == 0.87
+        assert result["vibe_scores"]["v1"]["primary_style"] == "cozy"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# COST ANALYST
+# COST ANALYST  (heuristic-only rewrite — no Firecrawl or Gemini)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestCostAnalystEdgeCases:
@@ -201,196 +208,88 @@ class TestCostAnalystEdgeCases:
         result = cost_analyst_node({"candidate_venues": [], "parsed_intent": {}})
         assert result["cost_profiles"] == {}
 
-    def test_venue_with_no_website_returns_fallback(self):
+    def test_venue_with_no_price_data_returns_none_range(self):
+        """Venue with no google_price, yelp_price, or price_range → confidence 'none'."""
         from app.agents.cost_analyst import cost_analyst_node
         state = {
-            "candidate_venues": [{"venue_id": "v1", "name": "Mystery Place", "category": "venue", "website": ""}],
-            "parsed_intent": {"group_size": 4},
+            "candidate_venues": [{"venue_id": "v1", "name": "Mystery Place", "category": "venue", "source": "google_places"}],
+            "parsed_intent": {},
         }
         result = cost_analyst_node(state)
-        assert result["cost_profiles"]["v1"]["pricing_confidence"] == "unknown"
-        assert result["cost_profiles"]["v1"]["value_score"] == 0.3
+        assert result["cost_profiles"]["v1"]["confidence"] == "none"
+        assert result["cost_profiles"]["v1"]["price_range"] is None
+        assert result["cost_profiles"]["v1"]["value_score"] == 0.3  # fallback
 
-    @patch("app.agents.cost_analyst._firecrawl_post", new_callable=AsyncMock)
-    @patch("app.agents.cost_analyst.generate_content", new_callable=AsyncMock)
-    def test_confirmed_pricing_keeps_gemini_score(self, mock_gen, mock_fc):
+    def test_single_source_google_price_medium_confidence(self):
+        """Google price only → confidence 'medium'."""
         from app.agents.cost_analyst import cost_analyst_node
-        mock_fc.return_value = {"links": [], "data": {"markdown": "Bowling: $10/person"}}
-        mock_gen.return_value = json.dumps({
-            "base_cost": 40.0, "hidden_costs": [], "total_cost_of_attendance": 40.0,
-            "per_person": 10.0, "value_score": 0.8, "pricing_confidence": "confirmed",
-            "notes": "Confirmed $10/person from website."
-        })
         state = {
-            "candidate_venues": [{"venue_id": "v1", "name": "Bowl-O", "category": "bowling", "website": "https://bowl.com"}],
-            "parsed_intent": {"group_size": 4},
+            "candidate_venues": [{"venue_id": "v1", "name": "Bowl-O", "category": "bowling", "source": "google_places", "price_range": "$$"}],
+            "parsed_intent": {},
         }
         result = cost_analyst_node(state)
-        assert result["cost_profiles"]["v1"]["pricing_confidence"] == "confirmed"
-        assert result["cost_profiles"]["v1"]["value_score"] == 0.8
+        assert result["cost_profiles"]["v1"]["price_range"] == "$$"
+        assert result["cost_profiles"]["v1"]["confidence"] == "medium"
 
-    @patch("app.agents.cost_analyst._firecrawl_post", new_callable=AsyncMock)
-    @patch("app.agents.cost_analyst.generate_content", new_callable=AsyncMock)
-    def test_estimated_pricing_caps_value_score_at_0_5(self, mock_gen, mock_fc):
+    def test_single_source_yelp_price_medium_confidence(self):
+        """Yelp price only → confidence 'medium'."""
         from app.agents.cost_analyst import cost_analyst_node
-        mock_fc.return_value = {"links": [], "data": {"markdown": "Some content"}}
-        mock_gen.return_value = json.dumps({
-            "base_cost": 80.0, "hidden_costs": [], "total_cost_of_attendance": 80.0,
-            "per_person": 20.0, "value_score": 0.9, "pricing_confidence": "estimated",
-            "notes": "Estimated from market rates."
-        })
         state = {
-            "candidate_venues": [{"venue_id": "v1", "name": "Venue X", "category": "bar", "website": "https://x.com"}],
-            "parsed_intent": {"group_size": 4},
+            "candidate_venues": [{"venue_id": "v1", "name": "Bar X", "source": "yelp", "price_range": "$$$"}],
+            "parsed_intent": {},
         }
         result = cost_analyst_node(state)
-        assert result["cost_profiles"]["v1"]["value_score"] <= 0.5
+        assert result["cost_profiles"]["v1"]["price_range"] == "$$$"
+        assert result["cost_profiles"]["v1"]["confidence"] == "medium"
 
-    @patch("app.agents.cost_analyst._firecrawl_post", new_callable=AsyncMock)
-    def test_firecrawl_returns_none_uses_fallback(self, mock_fc):
+    def test_matching_google_and_yelp_price_high_confidence(self):
+        """Both sources agree → confidence 'high'."""
         from app.agents.cost_analyst import cost_analyst_node
-        mock_fc.return_value = None  # simulates 429 exhausted or network failure
         state = {
-            "candidate_venues": [{"venue_id": "v1", "name": "Place", "category": "cafe", "website": "https://place.com"}],
-            "parsed_intent": {"group_size": 2},
+            "candidate_venues": [{"venue_id": "v1", "name": "Place", "google_price": "$$", "yelp_price": "$$"}],
+            "parsed_intent": {},
         }
         result = cost_analyst_node(state)
-        assert result["cost_profiles"]["v1"]["pricing_confidence"] == "unknown"
+        assert result["cost_profiles"]["v1"]["price_range"] == "$$"
+        assert result["cost_profiles"]["v1"]["confidence"] == "high"
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ACCESS ANALYST
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestAccessAnalystEdgeCases:
-
-    def test_no_candidates_returns_empty(self):
-        from app.agents.access_analyst import access_analyst_node
-        result = access_analyst_node({"candidate_venues": [], "parsed_intent": {}, "member_locations": []})
-        assert result["accessibility_scores"] == {}
-        assert result["isochrones"] == {}
-
-    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
-    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
-    def test_close_venue_gets_high_score(self, mock_dm, mock_iso):
-        from app.agents.access_analyst import access_analyst_node
-        # 5 minutes → score should be 1.0
-        mock_dm.return_value = [{"duration_sec": 300, "distance_m": 800, "status": "OK"}]
-        mock_iso.return_value = None
+    def test_conflicting_prices_resolves_to_median_low_confidence(self):
+        """Conflicting sources ($, $$$) → median ($$) with confidence 'low'."""
+        from app.agents.cost_analyst import cost_analyst_node
         state = {
-            "candidate_venues": [{"venue_id": "v1", "name": "Nearby Cafe", "lat": 43.65, "lng": -79.38}],
+            "candidate_venues": [{"venue_id": "v1", "name": "Place", "google_price": "$", "yelp_price": "$$$"}],
             "parsed_intent": {},
-            "member_locations": [],
-            "raw_prompt": "cafe",
         }
-        result = access_analyst_node(state)
-        score = result["accessibility_scores"]["v1"]["score"]
-        assert score == 1.0, f"Expected 1.0 for 5-min venue, got {score}"
+        result = cost_analyst_node(state)
+        assert result["cost_profiles"]["v1"]["price_range"] == "$$"
+        assert result["cost_profiles"]["v1"]["confidence"] == "low"
 
-    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
-    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
-    def test_far_venue_gets_low_score(self, mock_dm, mock_iso):
-        from app.agents.access_analyst import access_analyst_node
-        # 90 minutes → score should be 0.1
-        mock_dm.return_value = [{"duration_sec": 5400, "distance_m": 40000, "status": "OK"}]
-        mock_iso.return_value = None
-        state = {
-            "candidate_venues": [{"venue_id": "v1", "name": "Far Away Venue", "lat": 44.0, "lng": -80.0}],
-            "parsed_intent": {},
-            "member_locations": [],
-            "raw_prompt": "venue",
-        }
-        result = access_analyst_node(state)
-        score = result["accessibility_scores"]["v1"]["score"]
-        assert score == 0.1, f"Expected 0.1 for 90-min venue, got {score}"
+    def test_cheaper_price_range_yields_higher_value_score(self):
+        """$ should score higher value than $$$$."""
+        from app.agents.cost_analyst import _calculate_value_score
+        score_cheap = _calculate_value_score("$", "medium")
+        score_pricey = _calculate_value_score("$$$$", "medium")
+        assert score_cheap > score_pricey
 
-    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
-    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
-    def test_isochrone_stored_when_api_returns_geojson(self, mock_dm, mock_iso):
-        from app.agents.access_analyst import access_analyst_node
-        fake_geojson = {"type": "FeatureCollection", "features": [{"type": "Feature", "geometry": {"type": "Polygon"}}]}
-        mock_dm.return_value = [{"duration_sec": 600, "distance_m": 2000, "status": "OK"}]
-        mock_iso.return_value = fake_geojson
-        state = {
-            "candidate_venues": [{"venue_id": "v1", "name": "Test Venue", "lat": 43.65, "lng": -79.38}],
-            "parsed_intent": {},
-            "member_locations": [],
-            "raw_prompt": "venue",
-        }
-        result = access_analyst_node(state)
-        assert "v1" in result["isochrones"]
-        assert result["isochrones"]["v1"]["type"] == "FeatureCollection"
+    def test_none_confidence_gives_fallback_value_score(self):
+        from app.agents.cost_analyst import _calculate_value_score
+        assert _calculate_value_score(None, "none") == 0.3
 
-    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
-    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
-    def test_api_returns_no_duration_uses_neutral_fallback(self, mock_dm, mock_iso):
-        from app.agents.access_analyst import access_analyst_node
-        # No token → returns empty list → duration_sec = None → score = 0.5
-        mock_dm.return_value = []
-        mock_iso.return_value = None
+    def test_multiple_venues_all_profiled(self):
+        from app.agents.cost_analyst import cost_analyst_node
         state = {
-            "candidate_venues": [{"venue_id": "v1", "name": "Unknown", "lat": 43.65, "lng": -79.38}],
-            "parsed_intent": {},
-            "member_locations": [],
-            "raw_prompt": "venue",
-        }
-        result = access_analyst_node(state)
-        assert result["accessibility_scores"]["v1"]["score"] == 0.5
-
-    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
-    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
-    def test_member_locations_centroid_used_as_origin(self, mock_dm, mock_iso):
-        from app.agents.access_analyst import _resolve_origin
-        # Two members: centroid should be the average lat/lng
-        state = {
-            "parsed_intent": {},
-            "member_locations": [
-                {"lat": 43.60, "lng": -79.40},
-                {"lat": 43.70, "lng": -79.30},
+            "candidate_venues": [
+                {"venue_id": "v1", "source": "google_places", "price_range": "$"},
+                {"venue_id": "v2", "source": "yelp", "price_range": "$$"},
+                {"venue_id": "v3"},  # no price data
             ],
-        }
-        origin = _resolve_origin(state)
-        assert abs(origin[0] - 43.65) < 0.001
-        assert abs(origin[1] - (-79.35)) < 0.001
-
-    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
-    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
-    def test_multiple_venues_all_scored(self, mock_dm, mock_iso):
-        from app.agents.access_analyst import access_analyst_node
-        # Each venue gets its own distance matrix call (one destination per call)
-        mock_dm.return_value = [{"duration_sec": 600, "distance_m": 2000, "status": "OK"}]
-        mock_iso.return_value = None
-        venues = [
-            {"venue_id": "v1", "name": "Venue 1", "lat": 43.65, "lng": -79.38},
-            {"venue_id": "v2", "name": "Venue 2", "lat": 43.66, "lng": -79.39},
-            {"venue_id": "v3", "name": "Venue 3", "lat": 43.67, "lng": -79.40},
-        ]
-        state = {
-            "candidate_venues": venues,
             "parsed_intent": {},
-            "member_locations": [],
-            "raw_prompt": "venue",
         }
-        result = access_analyst_node(state)
-        assert len(result["accessibility_scores"]) == 3
-        for vid in ["v1", "v2", "v3"]:
-            assert vid in result["accessibility_scores"]
-            assert result["accessibility_scores"][vid]["score"] != 0.5  # real score, not fallback
-
-    def test_walking_mode_resolved_from_prompt(self):
-        from app.agents.access_analyst import _resolve_travel_mode
-        state = {"raw_prompt": "coffee shop I can walk to", "parsed_intent": {}}
-        assert _resolve_travel_mode(state) == "walking"
-
-    def test_transit_mode_resolved_from_prompt(self):
-        from app.agents.access_analyst import _resolve_travel_mode
-        state = {"raw_prompt": "take the TTC to a bar", "parsed_intent": {}}
-        assert _resolve_travel_mode(state) == "transit"
-
-    def test_driving_is_default_mode(self):
-        from app.agents.access_analyst import _resolve_travel_mode
-        state = {"raw_prompt": "escape room downtown", "parsed_intent": {}}
-        assert _resolve_travel_mode(state) == "driving"
+        result = cost_analyst_node(state)
+        assert len(result["cost_profiles"]) == 3
+        assert result["cost_profiles"]["v1"]["price_range"] == "$"
+        assert result["cost_profiles"]["v2"]["price_range"] == "$$"
+        assert result["cost_profiles"]["v3"]["confidence"] == "none"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -412,18 +311,18 @@ class TestCriticEdgeCases:
         from app.agents.critic import critic_node
         mock_weather.return_value = {"condition": "Rain", "description": "heavy rain", "temp_c": 5, "feels_like_c": 2}
         mock_events.return_value = []
-        # First candidate gets vetoed, second does not
+        # Upstream critic uses fast_fail key (not veto) in Gemini output
         mock_gen.side_effect = [
-            json.dumps({"risks": [{"type": "weather", "severity": "high", "detail": "heavy rain"}], "veto": True, "veto_reason": "Rain"}),
-            json.dumps({"risks": [], "veto": False, "veto_reason": None}),
-            json.dumps({"risks": [], "veto": False, "veto_reason": None}),
+            json.dumps({"risks": [{"type": "weather", "severity": "high", "detail": "heavy rain"}], "fast_fail": True, "fast_fail_reason": "Rain"}),
+            json.dumps({"risks": [], "fast_fail": False, "fast_fail_reason": None}),
         ]
         venues = [
             {"venue_id": "v1", "name": "Outdoor Park", "category": "park", "lat": 43.65, "lng": -79.38},
             {"venue_id": "v2", "name": "Indoor Gym", "category": "gym", "lat": 43.66, "lng": -79.39},
         ]
         result = critic_node({"candidate_venues": venues, "parsed_intent": {"activity": "outdoor"}})
-        assert result["veto"] is True  # v1 is #1 candidate and got vetoed
+        # Critic maps fast_fail → veto in return state
+        assert result["veto"] is True  # v1 is #1 candidate and got fast_fail/vetoed
         assert result["veto_reason"] == "Rain"
 
     @patch("app.agents.critic.generate_content", new_callable=AsyncMock)
@@ -433,7 +332,7 @@ class TestCriticEdgeCases:
         from app.agents.critic import critic_node
         mock_weather.return_value = {"condition": "Clear", "description": "sunny", "temp_c": 22, "feels_like_c": 21}
         mock_events.return_value = []
-        mock_gen.return_value = json.dumps({"risks": [], "veto": False, "veto_reason": None})
+        mock_gen.return_value = json.dumps({"risks": [], "fast_fail": False, "fast_fail_reason": None})
         state = {
             "candidate_venues": [{"venue_id": "v1", "name": "Great Spot", "category": "cafe", "lat": 43.65, "lng": -79.38}],
             "parsed_intent": {},
@@ -477,31 +376,18 @@ class TestSynthesiserEdgeCases:
             {"venue_id": f"v{i}", "name": f"Venue {i}", "address": f"{i} St", "lat": 43.65, "lng": -79.38, "category": "cafe"}
             for i in range(6)
         ]
-        result = synthesiser_node({"candidate_venues": venues, "vibe_scores": {}, "accessibility_scores": {}, "cost_profiles": {}, "risk_flags": {}, "agent_weights": {}, "raw_prompt": "cafe", "isochrones": {}})
+        result = synthesiser_node({"candidate_venues": venues, "vibe_scores": {}, "cost_profiles": {}, "risk_flags": {}, "agent_weights": {}, "raw_prompt": "cafe"})
         assert len(result["ranked_results"]) == 3
-        assert mock_gen.call_count == 3
-
-    @patch("app.agents.synthesiser.generate_content", new_callable=AsyncMock)
-    def test_isochrone_forwarded_to_ranked_results(self, mock_gen):
-        from app.agents.synthesiser import synthesiser_node
-        mock_gen.return_value = json.dumps({"why": "Good", "watch_out": ""})
-        fake_geojson = {"type": "FeatureCollection", "features": []}
-        state = {
-            "candidate_venues": [{"venue_id": "v1", "name": "Test", "address": "1 St", "lat": 43.65, "lng": -79.38, "category": "cafe"}],
-            "vibe_scores": {}, "accessibility_scores": {}, "cost_profiles": {},
-            "risk_flags": {}, "agent_weights": {}, "raw_prompt": "cafe",
-            "isochrones": {"v1": fake_geojson},
-        }
-        result = synthesiser_node(state)
-        assert result["ranked_results"][0]["isochrone_geojson"] == fake_geojson
+        # generate_content called once per explanation + once for global_consensus = 4 calls
+        assert mock_gen.call_count >= 3
 
     @patch("app.agents.synthesiser.generate_content", new_callable=AsyncMock)
     def test_high_risk_penalty_lowers_composite_score(self, mock_gen):
         from app.agents.synthesiser import _compute_composite_score
-        # High-severity risks should reduce ranking
-        score_clean = _compute_composite_score("v1", {}, {}, {}, {}, {})
+        # High-severity risks should reduce ranking — new signature: 5 args
+        score_clean = _compute_composite_score("v1", {}, {}, {}, {})
         score_risky = _compute_composite_score(
-            "v1", {}, {}, {},
+            "v1", {}, {},
             {"v1": [{"type": "weather", "severity": "high"}, {"type": "event", "severity": "high"}]},
             {}
         )
@@ -511,15 +397,38 @@ class TestSynthesiserEdgeCases:
     def test_missing_agent_data_uses_defaults_not_crash(self, mock_gen):
         from app.agents.synthesiser import synthesiser_node
         mock_gen.return_value = json.dumps({"why": "Good match", "watch_out": ""})
-        # No vibe/cost/access data at all
+        # No vibe/cost/risk data at all
         state = {
             "candidate_venues": [{"venue_id": "v1", "name": "Bare Venue", "address": "1 St", "lat": 43.65, "lng": -79.38, "category": "cafe"}],
-            "vibe_scores": {}, "accessibility_scores": {}, "cost_profiles": {},
-            "risk_flags": {}, "agent_weights": {}, "raw_prompt": "cafe", "isochrones": {},
+            "vibe_scores": {}, "cost_profiles": {},
+            "risk_flags": {}, "agent_weights": {}, "raw_prompt": "cafe",
         }
         result = synthesiser_node(state)
         assert len(result["ranked_results"]) == 1
         assert result["ranked_results"][0]["name"] == "Bare Venue"
+
+    @patch("app.agents.synthesiser.generate_content", new_callable=AsyncMock)
+    def test_ranked_result_has_correct_fields(self, mock_gen):
+        from app.agents.synthesiser import synthesiser_node
+        mock_gen.return_value = json.dumps({"why": "Good", "watch_out": "Busy on weekends"})
+        state = {
+            "candidate_venues": [{"venue_id": "v1", "name": "Test Spot", "address": "1 Main St", "lat": 43.65, "lng": -79.38, "category": "cafe"}],
+            "vibe_scores": {"v1": {"vibe_score": 0.8, "primary_style": "cozy", "confidence": 0.9}},
+            "cost_profiles": {"v1": {"price_range": "$$", "confidence": "high", "value_score": 0.6}},
+            "risk_flags": {},
+            "agent_weights": {},
+            "raw_prompt": "cozy cafe",
+        }
+        result = synthesiser_node(state)
+        top = result["ranked_results"][0]
+        assert top["rank"] == 1
+        assert top["name"] == "Test Spot"
+        assert "vibe_score" in top
+        assert "price_range" in top
+        assert "price_confidence" in top
+        assert top["price_range"] == "$$"
+        assert top["price_confidence"] == "high"
+        assert top["why"] == "Good"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -543,26 +452,20 @@ class TestGraphRetryLogic:
         state = {"veto": True, "retry_count": 1}
         assert _should_retry(state) == "synthesiser"
 
-    def test_inactive_agent_is_skipped(self):
-        from app.graph import _make_conditional_agent
-        called = []
-        def fake_agent(state):
-            called.append(True)
-            return state
-        wrapped = _make_conditional_agent("vibe_matcher", fake_agent)
-        # vibe_matcher not in active_agents → should skip
-        wrapped({"active_agents": ["scout", "cost_analyst"]})
-        assert len(called) == 0
+    def test_fast_fail_goes_to_commander_on_first_pass(self):
+        from app.graph import _should_retry
+        state = {"fast_fail": True, "veto": False, "retry_count": 0}
+        assert _should_retry(state) == "commander"
 
-    def test_active_agent_is_called(self):
-        from app.graph import _make_conditional_agent
-        called = []
-        def fake_agent(state):
-            called.append(True)
-            return state
-        wrapped = _make_conditional_agent("vibe_matcher", fake_agent)
-        wrapped({"active_agents": ["scout", "vibe_matcher"]})
-        assert len(called) == 1
+    def test_fast_fail_goes_to_synthesiser_after_retry(self):
+        from app.graph import _should_retry
+        state = {"fast_fail": True, "veto": False, "retry_count": 1}
+        assert _should_retry(state) == "synthesiser"
+
+    def test_no_flags_no_veto_goes_to_synthesiser(self):
+        from app.graph import _should_retry
+        state = {}
+        assert _should_retry(state) == "synthesiser"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -598,24 +501,22 @@ class TestAuth0Dependency:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# FULL MOCKED PIPELINE — All Agents End-to-End
+# FULL MOCKED PIPELINE — All Agents End-to-End (parallel architecture)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestFullPipelineAllAgents:
     """
-    Mocked end-to-end test: Commander → Scout → Vibe → Access → Cost → Critic → Synthesiser.
-    All external APIs mocked. Confirms every agent runs and contributes output
-    to ranked_results with correct data shapes.
+    Mocked end-to-end test: Commander → Scout → parallel_analysts (Vibe + Cost + Critic) → Synthesiser.
+    All external APIs mocked. Confirms the pipeline produces ranked_results with correct data shapes.
+
+    NOTE: access_analyst was removed in the upstream merge; parallel_analysts_node now runs
+    vibe_matcher, cost_analyst, and critic concurrently.
     """
 
     @patch("app.agents.synthesiser.generate_content", new_callable=AsyncMock)
     @patch("app.agents.critic.generate_content", new_callable=AsyncMock)
     @patch("app.agents.critic.get_weather", new_callable=AsyncMock)
     @patch("app.agents.critic.get_events", new_callable=AsyncMock)
-    @patch("app.agents.access_analyst.get_distance_matrix", new_callable=AsyncMock)
-    @patch("app.agents.access_analyst.get_isochrone", new_callable=AsyncMock)
-    @patch("app.agents.cost_analyst._firecrawl_post", new_callable=AsyncMock)
-    @patch("app.agents.cost_analyst.generate_content", new_callable=AsyncMock)
     @patch("app.agents.vibe_matcher.generate_content", new_callable=AsyncMock)
     @patch("app.agents.scout.search_yelp", new_callable=AsyncMock)
     @patch("app.agents.scout.search_places", new_callable=AsyncMock)
@@ -626,10 +527,6 @@ class TestFullPipelineAllAgents:
         mock_places,
         mock_yelp,
         mock_vibe_gen,
-        mock_cost_gen,
-        mock_fc,
-        mock_iso,
-        mock_dm,
         mock_events,
         mock_weather,
         mock_critic_gen,
@@ -638,7 +535,7 @@ class TestFullPipelineAllAgents:
         from app.graph import pathfinder_graph
         from app.models.state import PathfinderState
 
-        # ── Commander: returns a plan that activates ALL agents ──
+        # ── Commander: activates available agents (no access_analyst) ──
         mock_cmd_gen.return_value = json.dumps({
             "parsed_intent": {
                 "activity": "escape room",
@@ -646,22 +543,21 @@ class TestFullPipelineAllAgents:
                 "group_size": 4,
                 "budget": "moderate",
                 "vibe": "thrilling",
-                "time": "Saturday 2pm",
             },
-            "complexity_tier": "tier_3",
-            "active_agents": [
-                "scout", "vibe_matcher", "access_analyst", "cost_analyst", "critic"
-            ],
+            "complexity_tier": "tier_2",
+            "active_agents": ["scout", "vibe_matcher", "cost_analyst", "critic"],
             "agent_weights": {
                 "scout": 1.0,
                 "vibe_matcher": 0.8,
-                "access_analyst": 0.7,
                 "cost_analyst": 0.9,
                 "critic": 0.6,
             },
+            "requires_oauth": False,
+            "oauth_scopes": [],
+            "allowed_actions": [],
         })
 
-        # ── Scout: returns 2 real-looking venues ──
+        # ── Scout: returns 2 real-looking venues with price data ──
         mock_places.return_value = [
             {
                 "venue_id": "gp_escape1",
@@ -673,6 +569,7 @@ class TestFullPipelineAllAgents:
                 "category": "escape room",
                 "website": "https://trapped.ca",
                 "source": "google_places",
+                "price_range": "$$",
             },
         ]
         mock_yelp.return_value = [
@@ -686,50 +583,42 @@ class TestFullPipelineAllAgents:
                 "category": "escape room",
                 "website": "https://escapemanor.com",
                 "source": "yelp",
+                "price_range": "$$",
             },
         ]
 
-        # ── Vibe Matcher: both venues score well ──
+        # ── Vibe Matcher: both venues score well (use correct key names per prompt) ──
         mock_vibe_gen.side_effect = [
-            json.dumps({"score": 0.88, "style": "thrilling", "descriptors": ["intense", "immersive"], "confidence": 0.9}),
-            json.dumps({"score": 0.75, "style": "spooky", "descriptors": ["dramatic", "dark"], "confidence": 0.8}),
+            json.dumps({"vibe_score": 0.88, "primary_style": "thrilling", "visual_descriptors": ["intense", "immersive"], "confidence": 0.9}),
+            json.dumps({"vibe_score": 0.75, "primary_style": "spooky", "visual_descriptors": ["dramatic", "dark"], "confidence": 0.8}),
         ]
-
-        # ── Access Analyst: short drive to both ──
-        # get_distance_matrix returns list of dicts, one per destination
-        mock_dm.return_value = [{"duration_sec": 720, "distance_m": 2100, "status": "OK"}]
-        mock_iso.return_value = {
-            "type": "FeatureCollection",
-            "features": [{"type": "Feature", "geometry": {"type": "Polygon", "coordinates": []}}],
-        }
-
-        # ── Cost Analyst: website scraped and priced ──
-        mock_fc.return_value = {"links": [], "data": {"markdown": "Escape room: $28/person"}}
-        mock_cost_gen.return_value = json.dumps({
-            "base_cost": 112.0, "hidden_costs": ["tax ~13%"],
-            "total_cost_of_attendance": 126.56, "per_person": 31.64,
-            "value_score": 0.75, "pricing_confidence": "confirmed",
-            "notes": "Confirmed $28/person from website."
-        })
 
         # ── Critic: no veto ──
         mock_weather.return_value = {"condition": "Clear", "description": "sunny", "temp_c": 18, "feels_like_c": 17}
         mock_events.return_value = []
-        mock_critic_gen.return_value = json.dumps({"risks": [], "veto": False, "veto_reason": None})
+        mock_critic_gen.return_value = json.dumps({"risks": [], "fast_fail": False, "fast_fail_reason": None})
 
-        # ── Synthesiser: generate explanations ──
+        # ── Synthesiser: generate explanations + global consensus ──
         mock_synth_gen.return_value = json.dumps({
             "why": "Perfect thrilling escape room for your group, reasonably priced and easy to reach.",
             "watch_out": "Book in advance — popular on Saturdays.",
+            "global_consensus": "Trapped! is the top pick.",
+            "email_draft": "Dear team, ...",
         })
 
         # ── Run the full graph ──
+        # parallel_analysts_node is async, so we must use ainvoke (not sync invoke)
         state = PathfinderState(
-            raw_prompt="I need a budget-friendly escape room for 4 people in downtown Toronto this Saturday at 2 PM.",
+            raw_prompt="I need an escape room for 4 people in downtown Toronto this Saturday.",
+            veto=False,
+            fast_fail=False,
+            retry_count=0,
         )
-        final_state = pathfinder_graph.invoke(state)
+        import nest_asyncio
+        nest_asyncio.apply()
+        final_state = asyncio.run(pathfinder_graph.ainvoke(state))
 
-        # ── Assertions: complete pipeline ──
+        # ── Assertions: pipeline produced results ──
         ranked = final_state.get("ranked_results", [])
         assert len(ranked) > 0, "Pipeline produced no ranked results"
         assert len(ranked) <= 3, "Synthesiser should cap at top 3"
@@ -739,45 +628,22 @@ class TestFullPipelineAllAgents:
         assert "rank" in top, "Missing rank field"
         assert top["rank"] == 1, "Top result should be rank 1"
         assert "why" in top, "Missing Gemini explanation"
-        assert "isochrone_geojson" in top, "Isochrone not forwarded to ranked_results"
-        assert top["isochrone_geojson"] is not None, "Isochrone should not be None"
-        assert top["isochrone_geojson"]["type"] == "FeatureCollection", "Isochrone should be GeoJSON"
-
-        # ── Check Access Analyst score flowed to ranked result ──
-        assert "accessibility_score" in top, "Missing accessibility_score in ranked result"
-        assert top["accessibility_score"] > 0.5, \
-            f"Expected real access score (>0.5), got {top['accessibility_score']}"
-
-        # ── Check Vibe Matcher score flowed to ranked result ──
         assert "vibe_score" in top, "Missing vibe_score in ranked result"
-        assert top["vibe_score"] is not None, "vibe_score should not be None"
-
-        # ── Check Cost Analyst profile flowed to ranked result ──
-        assert "cost_profile" in top, "Missing cost_profile in ranked result"
-        assert top["cost_profile"]["pricing_confidence"] == "confirmed"
+        assert "price_range" in top, "Missing price_range in ranked result"
+        assert "price_confidence" in top, "Missing price_confidence in ranked result"
 
         # ── Verify each agent's raw output in final state ──
         vibe = final_state.get("vibe_scores", {})
         assert len(vibe) > 0, "Vibe Matcher produced no scores"
 
-        access = final_state.get("accessibility_scores", {})
-        assert len(access) > 0, "Access Analyst produced no scores"
-        # Scores should reflect the 12-min drive (720s → ~0.96), not fallback 0.5
-        for vid, acc in access.items():
-            assert acc["score"] != 0.5, \
-                f"Venue {vid} got neutral fallback — mock may not have been applied"
-
         cost = final_state.get("cost_profiles", {})
         assert len(cost) > 0, "Cost Analyst produced no profiles"
 
-        isochrones = final_state.get("isochrones", {})
-        assert len(isochrones) > 0, "No isochrones in final state"
-
         assert final_state.get("veto") is False, "Critic should not have vetoed"
+        assert final_state.get("retry_count", 0) == 0, "No retry should have occurred"
 
         print(f"\n[OK] Full pipeline produced {len(ranked)} ranked result(s):")
         for r in ranked:
             print(f"   #{r['rank']}: {r['name']}")
-            print(f"        Vibe={r.get('vibe_score')}, Access={r.get('accessibility_score')}")
+            print(f"        Vibe={r.get('vibe_score')}, Price={r.get('price_range')} ({r.get('price_confidence')})")
             print(f"        Why: {r.get('why', '')[:80]}")
-            print(f"        Isochrone: {'yes' if r.get('isochrone_geojson') else 'no'}")

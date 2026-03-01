@@ -162,3 +162,53 @@ class Auth0Service:
 
 # Export an instance
 auth0_service = Auth0Service()
+
+
+# ── JWT Verification (for API routes) ────────────────────────────────────────
+# Simple JWKS-based JWT verification for incoming Bearer tokens.
+# Caches the JWKS to avoid a network round-trip on every request.
+
+_jwks_cache: dict = {}
+
+async def verify_jwt(token: str) -> dict:
+    """
+    Decode and verify an Auth0 JWT Bearer token.
+
+    Fetches JWKS from Auth0 on first call, then caches it.
+    Raises HTTPException(401) for invalid / expired tokens.
+    Returns the decoded payload dict on success.
+    """
+    from fastapi import HTTPException
+
+    domain = settings.AUTH0_DOMAIN
+    audience = settings.AUTH0_AUDIENCE
+
+    if not domain or not audience:
+        # Auth0 not configured — treat every token as invalid
+        raise HTTPException(status_code=401, detail="Auth0 not configured")
+
+    global _jwks_cache
+    if not _jwks_cache:
+        jwks_url = f"https://{domain}/.well-known/jwks.json"
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(jwks_url)
+                resp.raise_for_status()
+                _jwks_cache = resp.json()
+        except Exception as exc:
+            logger.error("Failed to fetch JWKS: %s", exc)
+            raise HTTPException(status_code=401, detail="Could not fetch JWKS")
+
+    try:
+        from jose import jwt as jose_jwt, JWTError
+        payload = jose_jwt.decode(
+            token,
+            _jwks_cache,
+            algorithms=["RS256"],
+            audience=audience,
+            issuer=f"https://{domain}/",
+        )
+        return payload
+    except Exception as exc:
+        logger.warning("JWT verification failed: %s", exc)
+        raise HTTPException(status_code=401, detail="Invalid or expired token")

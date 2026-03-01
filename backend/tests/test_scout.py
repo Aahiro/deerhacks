@@ -60,11 +60,14 @@ class TestDeduplication:
 
 
 # ── Live API Test ──────────────────────────────────────────
+# These tests hit real APIs and require env vars — skip in standard test runs.
 
 
+@pytest.mark.integration
 class TestScoutNode:
     """Test the full scout_node with live API calls."""
 
+    @pytest.mark.integration
     def test_scout_returns_candidates(self):
         """Scout should return a non-empty list of candidate venues."""
         state = {

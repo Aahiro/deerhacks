@@ -10,14 +10,14 @@ def test_critic_node_veto(mock_get_weather, mock_get_events, mock_generate_conte
     mock_get_weather.return_value = {"condition": "Rain"}
     mock_get_events.return_value = [{"title": "Marathon"}]
     
-    # Mock Gemini telling us it's a veto
+    # Mock Gemini — upstream critic uses fast_fail key (critic maps it to veto in state)
     mock_generate_content.return_value = '''
     {
         "risks": [
             {"type": "weather", "severity": "high", "detail": "Rain"}
         ],
-        "veto": true,
-        "veto_reason": "Too rainy for an outdoor event."
+        "fast_fail": true,
+        "fast_fail_reason": "Too rainy for an outdoor event."
     }
     '''
     

@@ -315,6 +315,11 @@ Note: Skip COST if the intent is purely aesthetic and no booking is requested to
         logger.warning("Commander Gemini call failed: %s — using keyword fallback", e)
         plan = _keyword_fallback(raw_prompt)
 
+    # Apply user profile preference weights if available
+    agent_weights = plan.get("agent_weights", {"scout": 1.0})
+    if user_profile:
+        agent_weights = _apply_user_profile_weights(agent_weights, user_profile)
+
     # If we're on a retry (veto or fast_fail was set), clear the flags and
     # increment retry_count so the cap in _should_retry works correctly.
     was_retry = bool(state.get("veto") or state.get("fast_fail"))
@@ -323,7 +328,7 @@ Note: Skip COST if the intent is purely aesthetic and no booking is requested to
         "parsed_intent": plan.get("parsed_intent", {}),
         "complexity_tier": plan.get("complexity_tier", "tier_2"),
         "active_agents": plan.get("active_agents", ["scout"]),
-        "agent_weights": plan.get("agent_weights", {"scout": 1.0}),
+        "agent_weights": agent_weights,
         "requires_oauth": plan.get("requires_oauth", False),
         "oauth_scopes": plan.get("oauth_scopes", []),
         "allowed_actions": plan.get("allowed_actions", []),

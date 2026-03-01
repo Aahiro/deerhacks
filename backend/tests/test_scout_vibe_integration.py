@@ -15,9 +15,11 @@ from app.agents.scout import scout_node
 from app.agents.vibe_matcher import vibe_matcher_node
 
 
+@pytest.mark.integration
 class TestScoutVibeIntegration:
-    """End-to-end: Scout discovers venues → Vibe Matcher scores them."""
+    """End-to-end: Scout discovers venues → Vibe Matcher scores them (live APIs)."""
 
+    @pytest.mark.integration
     def test_scout_output_feeds_vibe_matcher(self):
         """
         1. Scout finds candidates from a real query.
@@ -58,9 +60,11 @@ class TestScoutVibeIntegration:
         print(f"\n🎨 Vibe Matcher scored {len(scores)} venues:")
         for vid, s in scores.items():
             name = next((v["name"] for v in candidates if v["venue_id"] == vid), vid)
-            print(f"   {name}: score={s['score']}, style={s['style']}")
+            # vibe_matcher now uses vibe_score / primary_style keys (upstream rewrite)
+            print(f"   {name}: score={s.get('vibe_score')}, style={s.get('primary_style')}")
 
         # Verify the state shape is correct for downstream nodes
         assert "candidate_venues" in state, "State must still contain candidate_venues"
         assert "vibe_scores" in state, "State must contain vibe_scores"
-        assert len(state["candidate_venues"]) == len(candidates), "Candidates should not be modified"
+        # Note: vibe_matcher may filter low-scoring venues but keeps at least 3
+        assert len(state["candidate_venues"]) >= min(3, len(candidates)), "Vibe matcher should keep at least 3 venues"
