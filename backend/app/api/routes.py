@@ -2,10 +2,17 @@
 PATHFINDER API routes.
 """
 
+import io
+import logging
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from app.schemas import PlanRequest, PlanResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -34,6 +41,7 @@ async def create_plan(request: PlanRequest):
         "snowflake_context": None,
         # Forward request params for agents to use
         "member_locations": request.member_locations or [],
+        "chat_history": request.chat_history or [],
     }
 
     # Inject explicit fields into parsed_intent if provided
@@ -112,3 +120,35 @@ async def websocket_plan(websocket: WebSocket):
 @router.get("/health")
 async def api_health():
     return {"status": "ok"}
+
+
+# ── Voice TTS ────────────────────────────────────────────
+
+
+class VoiceSynthRequest(BaseModel):
+    """Request body for text-to-speech synthesis."""
+    text: str = Field(..., description="Text to synthesize")
+    voice_id: Optional[str] = Field(None, description="ElevenLabs voice ID")
+
+
+@router.post("/voice/synthesize")
+async def synthesize_voice(request: VoiceSynthRequest):
+    """
+    Convert text to speech using ElevenLabs.
+    Returns an audio/mpeg stream.
+    """
+    from app.services.elevenlabs import synthesize_speech
+
+    audio_bytes = await synthesize_speech(
+        text=request.text,
+        voice_id=request.voice_id,
+    )
+
+    if audio_bytes is None:
+        return {"error": "Voice synthesis unavailable. Check ELEVENLABS_API_KEY."}
+
+    return StreamingResponse(
+        io.BytesIO(audio_bytes),
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": "inline; filename=speech.mp3"},
+    )

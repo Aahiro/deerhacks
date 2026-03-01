@@ -4,6 +4,7 @@ Application configuration — loaded from environment variables.
 
 from pydantic_settings import BaseSettings
 from typing import List, Optional
+import json
 
 
 class Settings(BaseSettings):
@@ -36,6 +37,22 @@ class Settings(BaseSettings):
     AUTH0_CLIENT_ID: Optional[str] = None
     AUTH0_CLIENT_SECRET: Optional[str] = None
     AUTH0_AUDIENCE: Optional[str] = None
+    AUTH0_SECRET: Optional[str] = None
+
+    # ── ElevenLabs ──
+    ELEVENLABS_API_KEY: str = ""
+
+    # ── Snowflake ──
+    SNOWFLAKE_ACCOUNT: Optional[str] = None
+    SNOWFLAKE_USER: Optional[str] = None
+    SNOWFLAKE_PASSWORD: Optional[str] = None
+    SNOWFLAKE_DATABASE: Optional[str] = None
+    SNOWFLAKE_SCHEMA: Optional[str] = None
+    SNOWFLAKE_WAREHOUSE: Optional[str] = None
+    SNOWFLAKE_ROLE: Optional[str] = None
+
+    # ── CORS ──
+    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:3001"]
 
     model_config = {
         "env_file": ".env",
