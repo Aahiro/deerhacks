@@ -175,7 +175,7 @@ async def _generate_global_consensus(top_venues: list, raw_prompt: str) -> tuple
         return "Based on the options, these venues are the strongest matches.", ""
 
 
-def synthesiser_node(state: PathfinderState) -> PathfinderState:
+async def synthesiser_node(state: PathfinderState) -> PathfinderState:
     """
     Final synthesis: rank venues and produce human-readable results.
 
@@ -196,7 +196,7 @@ def synthesiser_node(state: PathfinderState) -> PathfinderState:
     risk_flags = state.get("risk_flags", {})
     agent_weights = state.get("agent_weights", {})
     raw_prompt = state.get("raw_prompt", "")
-    
+
     requires_oauth = state.get("requires_oauth", False)
     allowed_actions = state.get("allowed_actions", [])
     oauth_scopes = state.get("oauth_scopes", [])
@@ -213,11 +213,11 @@ def synthesiser_node(state: PathfinderState) -> PathfinderState:
     # Step 2: Sort by score descending
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    # Step 3: Generate explanations for top 3
+    # Step 3: Generate explanations for top 3 (direct await — no asyncio.run needed)
     top_venues = scored[:3]
 
-    async def _explain_all():
-        return await asyncio.gather(*[
+    try:
+        explanations = await asyncio.gather(*[
             _generate_explanation(
                 venue=venue,
                 vibe_data=vibe_scores.get(vid, {}),
@@ -227,13 +227,6 @@ def synthesiser_node(state: PathfinderState) -> PathfinderState:
             )
             for _, venue, vid in top_venues
         ])
-
-    try:
-        explanations = asyncio.run(_explain_all())
-    except RuntimeError:
-        import nest_asyncio
-        nest_asyncio.apply()
-        explanations = asyncio.run(_explain_all())
     except Exception as exc:
         logger.error("Synthesis explanations failed: %s", exc)
         explanations = [{"why": "", "watch_out": ""} for _ in top_venues]
@@ -277,13 +270,12 @@ def synthesiser_node(state: PathfinderState) -> PathfinderState:
 
     logger.info("Synthesiser ranked %d venues (top 3 explained)", len(scored))
 
-    # Step 5: Generate Global Consensus
+    # Step 5: Generate Global Consensus (direct await — no asyncio.run needed)
     try:
-        consensus_text, email_draft = asyncio.run(_generate_global_consensus(top_venues, raw_prompt))
-    except RuntimeError:
-        import nest_asyncio
-        nest_asyncio.apply()
-        consensus_text, email_draft = asyncio.run(_generate_global_consensus(top_venues, raw_prompt))
+        consensus_text, email_draft = await _generate_global_consensus(top_venues, raw_prompt)
+    except Exception as exc:
+        logger.warning("Global consensus failed: %s", exc)
+        consensus_text, email_draft = "Based on the options, these venues are the strongest matches.", ""
 
     action_request = None
     if requires_oauth and "send_email" in allowed_actions:
