@@ -155,6 +155,11 @@ def access_analyst_node(state: PathfinderState) -> PathfinderState:
     origin = _resolve_origin(state)
     travel_mode = _resolve_travel_mode(state)
 
+    # Mapbox Matrix API only supports driving/walking/cycling — remap transit → walking
+    mapbox_mode = "walking" if travel_mode == "transit" else travel_mode
+    if travel_mode == "transit":
+        logger.info("Access Analyst: transit mode remapped to walking for Mapbox")
+
     logger.info(
         "Access Analyst: origin=%s, mode=%s, venues=%d",
         origin, travel_mode, len(candidates),
@@ -162,7 +167,7 @@ def access_analyst_node(state: PathfinderState) -> PathfinderState:
 
     async def _analyze_all():
         return await asyncio.gather(
-            *[_analyze_venue_access(v, origin, profile=travel_mode) for v in candidates]
+            *[_analyze_venue_access(v, origin, profile=mapbox_mode) for v in candidates]
         )
 
     try:
