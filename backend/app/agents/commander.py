@@ -206,7 +206,7 @@ def _apply_user_profile_weights(
 
 # ── Main node entry point ─────────────────────────────────────────────
 
-def commander_node(state: PathfinderState) -> PathfinderState:
+async def commander_node(state: PathfinderState) -> PathfinderState:
     """
     Parse the raw user prompt into a structured execution plan.
 
@@ -232,11 +232,7 @@ def commander_node(state: PathfinderState) -> PathfinderState:
         else:
             from app.services.auth0 import auth0_service
             try:
-                user_profile = asyncio.run(auth0_service.get_user_profile(auth_user_id))
-            except RuntimeError:
-                import nest_asyncio
-                nest_asyncio.apply()
-                user_profile = asyncio.run(auth0_service.get_user_profile(auth_user_id))
+                user_profile = await auth0_service.get_user_profile(auth_user_id)
             except Exception as e:
                 logger.warning(f"Failed to fetch user profile in Commander: {e}")
                 user_profile = {}
@@ -301,7 +297,10 @@ Note: Skip COST if the intent is purely aesthetic and no booking is requested to
     context = []
 
     try:
-        response_text = asyncio.run(generate_content(prompt))
+        response_text = await generate_content(prompt)
+
+        if not response_text:
+            raise ValueError("Empty response from Gemini")
 
         # Clean up possible markdown artifacts
         if response_text.startswith("```json"):
