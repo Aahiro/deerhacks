@@ -1,10 +1,11 @@
 "use client";
 
 import { useState, useRef } from "react";
-import SearchBar from "@/components/SearchBar";
-import Map from "@/components/Map";
-import VenueCard from "@/components/VenueCard";
-import { createPlan } from "@/lib/api";
+import SearchBar from "@/app/components/SearchBar";
+import Map from "@/app/components/Map";
+import VenueCard from "@/app/components/VenueCard";
+import VoiceInput from "@/app/components/VoiceInput";
+import { createPlan } from "@/app/lib/api";
 
 export default function Home() {
     const [venues, setVenues] = useState([]);
@@ -12,6 +13,7 @@ export default function Home() {
     const [error, setError] = useState(null);
     const [selectedVenue, setSelectedVenue] = useState(null);
     const [hasSearched, setHasSearched] = useState(false);
+    const [chatHistory, setChatHistory] = useState([]);
     const mapRef = useRef(null);
 
     const handleSearch = async (prompt) => {
@@ -19,8 +21,17 @@ export default function Home() {
         setError(null);
         setHasSearched(true);
         try {
-            const data = await createPlan({ prompt });
+            const data = await createPlan({
+                prompt,
+                chat_history: chatHistory.length > 0 ? chatHistory : null,
+            });
             setVenues(data.venues || []);
+            // Append to chat history for reprompting
+            setChatHistory((prev) => [
+                ...prev,
+                { role: "user", content: prompt },
+                { role: "assistant", content: `Found ${data.venues?.length || 0} venues.` },
+            ]);
             if (!data.venues?.length) {
                 setError("No venues found. Try a different search.");
             }
@@ -73,7 +84,15 @@ export default function Home() {
                     </span>
                 </div>
 
-                <SearchBar onSearch={handleSearch} loading={loading} />
+                <div className="flex items-center gap-2">
+                    <div className="flex-1">
+                        <SearchBar onSearch={handleSearch} loading={loading} />
+                    </div>
+                    <VoiceInput
+                        onTranscript={(text) => handleSearch(text)}
+                        disabled={loading}
+                    />
+                </div>
             </div>
 
             {/* Loading skeleton */}
@@ -134,7 +153,7 @@ export default function Home() {
             {!loading && !hasSearched && (
                 <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-10 text-center">
                     <p className="text-sm text-zinc-500">
-                        Tell PATHFINDER what you're looking for
+                        Tell PATHFINDER what you&apos;re looking for
                     </p>
                     <div className="mt-2 flex flex-wrap gap-2 justify-center max-w-lg">
                         {[

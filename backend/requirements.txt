@@ -22,6 +22,18 @@ faiss-cpu>=1.7.4
 # Auth
 python-jose[cryptography]==3.3.0
 
+# ElevenLabs TTS
+elevenlabs>=0.2.0
+
+# Auth
+python-jose[cryptography]==3.3.0
+auth0-python==4.6.0
+
+# Snowflake connector (already listed above)
+
 # Utilities
 geojson==3.1.0
 nest_asyncio==1.6.0
+
+# WebSockets
+websockets

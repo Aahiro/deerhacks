@@ -1,83 +1,164 @@
-"""
-Auth0 JWT verification service.
-
-Fetches the JWKS from Auth0, caches it in memory, and verifies
-incoming Bearer tokens. Returns the decoded claims on success.
-"""
-
 import logging
-from typing import Optional
-
 import httpx
-from jose import jwt, JWTError
-from fastapi import HTTPException
-
+from typing import Optional, Dict, Any
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ── In-memory JWKS cache ──────────────────────────────────────────────
-_jwks_cache: Optional[dict] = None
+class Auth0Service:
+    def __init__(self):
+        self.domain = settings.AUTH0_DOMAIN
+        self.client_id = settings.AUTH0_CLIENT_ID
+        self.client_secret = settings.AUTH0_CLIENT_SECRET
+        self.audience = settings.AUTH0_AUDIENCE
+        
+    async def get_management_token(self) -> Optional[str]:
+        """Fetch a Machine-to-Machine token for the Auth0 Management API."""
+        if not all([self.domain, self.client_id, self.client_secret]):
+            logger.warning("Auth0 configuration missing. Cannot fetch management token.")
+            return None
+            
+        url = f"https://{self.domain}/oauth/token"
+        payload = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "audience": f"https://{self.domain}/api/v2/",
+            "grant_type": "client_credentials"
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                return resp.json().get("access_token")
+        except Exception as e:
+            logger.error(f"Failed to get Auth0 Management token: {e}")
+            return None
 
+    async def get_user_profile(self, user_id: str) -> Dict[str, Any]:
+        """Retrieve user metadata from Auth0 to personalize agent weights."""
+        if not user_id:
+            return {}
+            
+        token = await self.get_management_token()
+        if not token:
+            return {}
+            
+        url = f"https://{self.domain}/api/v2/users/{user_id}"
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                user_data = resp.json()
+                
+                # We specifically care about app_metadata and user_metadata
+                # which would hold profile info like "student", "senior", "budget", etc.
+                profile = {}
+                profile.update(user_data.get("user_metadata", {}))
+                profile.update(user_data.get("app_metadata", {}))
+                
+                return profile
+        except Exception as e:
+            logger.error(f"Failed to fetch user profile for {user_id}: {e}")
+            return {}
 
-async def _get_jwks() -> dict:
-    """Fetch and cache the Auth0 JSON Web Key Set."""
-    global _jwks_cache
-    if _jwks_cache:
-        return _jwks_cache
+    async def get_idp_token(self, user_id: str, provider: str = "google-oauth2") -> Optional[str]:
+        """Retrieve a third-party Identity Provider token (e.g., Google Calendar) via Token Vault."""
+        if not user_id:
+            return None
+            
+        token = await self.get_management_token()
+        if not token:
+            return None
+            
+        url = f"https://{self.domain}/api/v2/users/{user_id}/identities"
+        headers = {"Authorization": f"Bearer {token}"}
+        
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                identities = resp.json()
+                
+                # Find the requested identity provider
+                for ext_id in identities:
+                    if ext_id.get("provider") == provider:
+                        return ext_id.get("access_token")
+                        
+                logger.warning(f"No active {provider} identity found for {user_id}")
+                return None
+        except Exception as e:
+            logger.error(f"Failed to fetch {provider} token from Auth0 Vault: {e}")
+            return None
 
-    url = f"https://{settings.AUTH0_DOMAIN}/.well-known/jwks.json"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            _jwks_cache = resp.json()
-            logger.info("Auth0: JWKS fetched and cached from %s", url)
-            return _jwks_cache
-    except Exception as exc:
-        logger.error("Auth0: failed to fetch JWKS: %s", exc)
-        raise HTTPException(status_code=503, detail="Auth service unavailable")
+    async def trigger_ciba_auth(self, user_id: str, message: str) -> Optional[str]:
+        """
+        Trigger an Asynchronous Authorization (CIBA) push notification to the user's device.
+        Returns an 'auth_req_id' string if successful, which must be polled later.
+        """
+        if not all([self.domain, self.client_id, self.client_secret]):
+            return None
+            
+        url = f"https://{self.domain}/oauth/bc-authorize"
+        payload = {
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "audience": self.audience,
+            "login_hint": user_id, 
+            "binding_message": message
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(url, data=payload)
+                resp.raise_for_status()
+                return resp.json().get("auth_req_id")
+        except Exception as e:
+            logger.error(f"Failed to trigger CIBA for {user_id}: {e}")
+            return None
 
+    async def poll_ciba_status(self, auth_req_id: str) -> Dict[str, Any]:
+        """
+        Poll the status of a pending CIBA authorization.
+        Returns a dictionary with status: "pending", "approved", or "rejected".
+        """
+        if not all([self.domain, self.client_id, self.client_secret]):
+            return {"status": "error", "detail": "Missing Auth0 Config"}
+            
+        url = f"https://{self.domain}/oauth/token"
+        payload = {
+            "grant_type": "urn:openid:params:grant-type:ciba",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "auth_req_id": auth_req_id
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(url, data=payload)
+                
+                if resp.status_code == 200:
+                    # Token granted = Approved by user
+                    return {"status": "approved", "access_token": resp.json().get("access_token")}
+                    
+                # 400 Bad Request indicates it's still pending, rejected, or expired
+                err_data = resp.json()
+                error_type = err_data.get("error")
+                
+                if error_type == "authorization_pending":
+                    return {"status": "pending"}
+                elif error_type == "access_denied":
+                    return {"status": "rejected", "detail": "User denied the request"}
+                elif error_type == "expired_token":
+                    return {"status": "error", "detail": "CIBA request expired"}
+                else:
+                    return {"status": "error", "detail": error_type}
+                    
+        except Exception as e:
+            logger.error(f"CIBA polling failed: {e}")
+            return {"status": "error", "detail": str(e)}
 
-async def verify_jwt(token: str) -> dict:
-    """
-    Verify an Auth0 JWT and return the decoded claims.
-
-    Raises HTTPException(401) if the token is invalid or expired.
-    """
-    if not settings.AUTH0_DOMAIN or not settings.AUTH0_AUDIENCE:
-        logger.warning("Auth0: AUTH0_DOMAIN or AUTH0_AUDIENCE not configured — skipping verification")
-        return {}
-
-    try:
-        jwks = await _get_jwks()
-        unverified_header = jwt.get_unverified_header(token)
-
-        # Find the matching key in JWKS
-        rsa_key = {}
-        for key in jwks.get("keys", []):
-            if key.get("kid") == unverified_header.get("kid"):
-                rsa_key = {
-                    "kty": key["kty"],
-                    "kid": key["kid"],
-                    "use": key["use"],
-                    "n":   key["n"],
-                    "e":   key["e"],
-                }
-                break
-
-        if not rsa_key:
-            raise HTTPException(status_code=401, detail="Unable to find matching JWT key")
-
-        payload = jwt.decode(
-            token,
-            rsa_key,
-            algorithms=["RS256"],
-            audience=settings.AUTH0_AUDIENCE,
-            issuer=f"https://{settings.AUTH0_DOMAIN}/",
-        )
-        return payload
-
-    except JWTError as exc:
-        logger.warning("Auth0: JWT validation failed: %s", exc)
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+# Export an instance
+auth0_service = Auth0Service()

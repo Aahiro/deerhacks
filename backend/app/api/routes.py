@@ -2,16 +2,22 @@
 PATHFINDER API routes.
 """
 
-from fastapi import APIRouter, Depends
+import io
+import logging
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
+from typing import Optional
 
 from app.schemas import PlanRequest, PlanResponse
-from app.dependencies import get_optional_user
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.post("/plan", response_model=PlanResponse)
-async def create_plan(request: PlanRequest, user: dict = Depends(get_optional_user)):
+async def create_plan(request: PlanRequest):
     """
     Accept a natural-language activity request and return ranked venues.
 
@@ -27,17 +33,18 @@ async def create_plan(request: PlanRequest, user: dict = Depends(get_optional_us
         "agent_weights": {},
         "candidate_venues": [],
         "vibe_scores": {},
-        "accessibility_scores": {},
-        "isochrones": {},
         "cost_profiles": {},
         "risk_flags": {},
         "veto": False,
         "veto_reason": None,
+        "fast_fail": False,
+        "fast_fail_reason": None,
         "retry_count": 0,
         "ranked_results": [],
+        "snowflake_context": None,
         # Forward request params for agents to use
         "member_locations": request.member_locations or [],
-        "user_profile": user,
+        "chat_history": request.chat_history or [],
     }
 
     # Inject explicit fields into parsed_intent if provided
@@ -58,6 +65,95 @@ async def create_plan(request: PlanRequest, user: dict = Depends(get_optional_us
     )
 
 
+@router.websocket("/ws/plan")
+async def websocket_plan(websocket: WebSocket):
+    from app.graph import pathfinder_graph
+    await websocket.accept()
+    try:
+        data = await websocket.receive_json()
+        initial_state = {
+            "raw_prompt": data.get("prompt", ""),
+            "parsed_intent": {},
+            "complexity_tier": "tier_2",
+            "active_agents": [],
+            "agent_weights": {},
+            "candidate_venues": [],
+            "vibe_scores": {},
+            "cost_profiles": {},
+            "risk_flags": {},
+            "veto": False,
+            "veto_reason": None,
+            "fast_fail": False,
+            "fast_fail_reason": None,
+            "retry_count": 0,
+            "ranked_results": [],
+            "member_locations": data.get("member_locations", []),
+        }
+        NODE_LABELS = {
+            "commander": "Parsing your request...",
+            "scout": "Discovering venues...",
+            "vibe_matcher": "Analyzing vibes...",
+            "cost_analyst": "Calculating costs...",
+            "critic": "Running risk assessment...",
+            "synthesiser": "Ranking results...",
+        }
+        accumulated = {**initial_state}
+        async for event in pathfinder_graph.astream(initial_state):
+            node_name = list(event.keys())[0]
+            accumulated.update(event[node_name])
+            await websocket.send_json({
+                "type": "progress",
+                "node": node_name,
+                "label": NODE_LABELS.get(node_name, node_name),
+            })
+        await websocket.send_json({
+            "type": "result",
+            "data": PlanResponse(
+                venues=accumulated.get("ranked_results", []),
+                execution_summary="Pipeline complete.",
+            ).model_dump(),
+        })
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @router.get("/health")
 async def api_health():
     return {"status": "ok"}
+
+
+# ── Voice TTS ────────────────────────────────────────────
+
+
+class VoiceSynthRequest(BaseModel):
+    """Request body for text-to-speech synthesis."""
+    text: str = Field(..., description="Text to synthesize")
+    voice_id: Optional[str] = Field(None, description="ElevenLabs voice ID")
+
+
+@router.post("/voice/synthesize")
+async def synthesize_voice(request: VoiceSynthRequest):
+    """
+    Convert text to speech using ElevenLabs.
+    Returns an audio/mpeg stream.
+    """
+    from app.services.elevenlabs import synthesize_speech
+
+    audio_bytes = await synthesize_speech(
+        text=request.text,
+        voice_id=request.voice_id,
+    )
+
+    if audio_bytes is None:
+        return {"error": "Voice synthesis unavailable. Check ELEVENLABS_API_KEY."}
+
+    return StreamingResponse(
+        io.BytesIO(audio_bytes),
+        media_type="audio/mpeg",
+        headers={"Content-Disposition": "inline; filename=speech.mp3"},
+    )

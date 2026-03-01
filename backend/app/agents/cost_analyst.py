@@ -1,314 +1,120 @@
 """
-Node 5 -- The COST ANALYST (Financial)
-"No-surprises" auditor: scrapes true cost and compares to Snowflake history.
+Node 4 -- The COST ANALYST (Financial)
+"No-surprises" auditor: Normalizes price signals extracted from discovery APIs.
 
-Scraping Strategy:
-  1. Firecrawl /map    -> discover "Pricing" / "Menu" page on venue website
-  2. Firecrawl /scrape -> extract page content as markdown
-  3. Gemini            -> extract structured pricing from content
-
-Fallback Tiers:
-  - Confirmed pricing  -> value_score from Gemini assessment
-  - Estimated pricing   -> value_score capped at 0.5 with estimation note
-  - Unknown pricing     -> value_score 0.3 with uncertainty warning
-
-Tools: Firecrawl, Gemini
+Pricing is now informational only, and we rely on heuristic analysis of 
+the price ranges ($ to $$$$) returned by Google Places and Yelp, 
+resolving conflicts appropriately.
 """
 
-import asyncio
-import json
 import logging
-from typing import Optional
-
-import httpx
-
 from app.models.state import PathfinderState
-from app.services.gemini import generate_content
-from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Convert $ strings to numeric values for median calculation
+_PRICE_VALUES = {
+    "$": 1,
+    "$$": 2,
+    "$$$": 3,
+    "$$$$": 4
+}
 
-# -- Firecrawl ----------------------------------------------------------
-_FIRECRAWL_BASE = "https://api.firecrawl.dev/v1"
+_NUM_TO_PRICE = {
+    1: "$",
+    2: "$$",
+    3: "$$$",
+    4: "$$$$"
+}
 
-
-async def _firecrawl_post(endpoint: str, payload: dict, retries: int = 3) -> Optional[dict]:
+def _calculate_value_score(price_range: str, confidence: str) -> float:
     """
-    POST to Firecrawl with automatic 429 retry + exponential backoff.
-    Shared by both /map and /scrape to avoid duplicating retry logic.
+    Assign a simple subjective value_score for the Synthesiser based on price.
+    We assume lower price is generally 'better value' for sorting,
+    but capped by confidence.
     """
-    if not settings.FIRECRAWL_API_KEY:
-        return None
-
-    url = f"{_FIRECRAWL_BASE}/{endpoint}"
-    headers = {"Authorization": f"Bearer {settings.FIRECRAWL_API_KEY}"}
-
-    for attempt in range(retries):
-        try:
-            async with httpx.AsyncClient(timeout=25) as client:
-                resp = await client.post(url, headers=headers, json=payload)
-
-            if resp.status_code == 429:
-                wait = 2 ** attempt  # 1s, 2s, 4s
-                logger.warning("Firecrawl /%s rate limited (429). Retrying %s in %ds...",
-                               endpoint, payload.get("url", ""), wait)
-                await asyncio.sleep(wait)
-                continue
-
-            resp.raise_for_status()
-            return resp.json()
-
-        except httpx.HTTPError as exc:
-            logger.warning("Firecrawl /%s network error for %s: %s",
-                           endpoint, payload.get("url", ""), exc)
-            if attempt < retries - 1:
-                await asyncio.sleep(2 ** attempt)
-
-    return None
+    if confidence == "none" or not price_range:
+        return 0.3
+    
+    val = _PRICE_VALUES.get(price_range, 2)
+    
+    # Simple heuristic: $ -> 0.8, $$ -> 0.6, $$$ -> 0.4, $$$$ -> 0.2
+    base_score = 1.0 - (val * 0.2)
+    
+    # Penalize low confidence
+    if confidence == "low":
+        base_score -= 0.1
+    elif confidence == "estimated" or confidence == "medium":
+        base_score -= 0.05
+        
+    return max(0.1, round(base_score, 2))
 
 
-async def _firecrawl_map(website_url: str) -> list[str]:
+def _analyze_venue_cost(venue: dict) -> dict:
     """
-    Use Firecrawl /map to discover sub-pages on a venue website.
-    Returns a list of page URLs, filtered for pricing-related pages.
+    Determine price_range and confidence for a single venue by resolving conflicts 
+    if both Google and Yelp data were somehow passed (e.g. merged), OR just by 
+    reading the scout's `price_range` if it's a single source.
     """
-    data = await _firecrawl_post("map", {
-        "url": website_url,
-        "search": "pricing rates cost fees menu package book reserve",
-    })
+    # If scout.py passed google_price and yelp_price explicitly:
+    google_price = venue.get("google_price")
+    yelp_price = venue.get("yelp_price")
+    
+    # If not explicitly merged strings but we just have one:
+    if not google_price and not yelp_price:
+        source = venue.get("source")
+        if source == "google_places":
+            google_price = venue.get("price_range")
+        elif source == "yelp":
+            yelp_price = venue.get("price_range")
+        else:
+            google_price = venue.get("price_range")
 
-    if not data:
-        return []
+    if google_price and yelp_price:
+        if google_price == yelp_price:
+            resolved_price = google_price
+            confidence = "high"
+        else:
+            # Conflict -> median
+            val_g = _PRICE_VALUES.get(google_price, 2)
+            val_y = _PRICE_VALUES.get(yelp_price, 2)
+            median_val = round((val_g + val_y) / 2) # e.g. 1 and 2 -> 1.5 -> 2
+            resolved_price = _NUM_TO_PRICE.get(median_val, "$$")
+            confidence = "low"
+    elif google_price:
+        resolved_price = google_price
+        confidence = "medium"
+    elif yelp_price:
+        resolved_price = yelp_price
+        confidence = "medium"
+    else:
+        resolved_price = None
+        confidence = "none"
 
-    all_links = data.get("links", [])
-    pricing_keywords = ["pric", "rate", "cost", "fee", "menu", "book", "package"]
-    relevant = [l for l in all_links if any(kw in l.lower() for kw in pricing_keywords)]
-    return relevant if relevant else all_links[:3]
-
-
-async def _firecrawl_scrape(page_url: str) -> Optional[str]:
-    """
-    Use Firecrawl /scrape to extract page content as markdown.
-    Returns the markdown text of the page.
-    """
-    data = await _firecrawl_post("scrape", {
-        "url": page_url,
-        "formats": ["markdown"],
-    })
-
-    if not data:
-        return None
-
-    return data.get("data", {}).get("markdown", "")
-
-
-
-# -- Pricing extraction via Gemini --------------------------------------
-
-_COST_PROMPT = """You are a pricing analyst for a group activity planning app in Toronto, Canada. Your job is to extract or estimate costs.
-
-Venue: {name}
-Category: {category}
-Group size: {group_size}
-
-Website content:
-{content}
-
-INSTRUCTIONS:
-1. Search for ANY pricing signals: hourly rates, per-person fees, packages, menu prices, rental costs, booking rates, membership fees, event packages.
-2. Identify hidden costs: shoe rentals, equipment fees, minimum spends, service charges, cleaning fees, parking fees, lane fees, food minimums.
-3. If you find EXPLICIT prices on the page, use them and set pricing_confidence to "confirmed".
-4. If prices are NOT explicitly listed, ESTIMATE based on:
-   - Typical Toronto market rates for this type of venue/activity
-   - The venue's category and perceived quality
-   - Group size of {group_size} people
-   Set pricing_confidence to "estimated".
-5. NEVER return base_cost as 0 unless you are confident the activity is genuinely free. Bowling in Toronto typically costs $6-12 per person per game. Cafes cost $5-15 per person. Use your knowledge.
-
-Respond with ONLY a valid JSON object (no markdown, no extra text):
-{{
-  "base_cost": <float, primary cost for the group in CAD>,
-  "hidden_costs": [
-    {{"label": "<fee name>", "amount": <float>}}
-  ],
-  "total_cost_of_attendance": <float, base + all hidden costs>,
-  "per_person": <float, total / group_size>,
-  "value_score": <float 0.0 to 1.0, subjective value for money>,
-  "pricing_confidence": "<confirmed | estimated | unknown>",
-  "notes": "<pricing observations, source of estimates, or warnings>"
-}}
-"""
-
-
-async def _extract_pricing(
-    venue: dict, content: str, group_size: int
-) -> dict:
-    """Use Gemini to extract structured pricing from scraped content."""
-    prompt = _COST_PROMPT.format(
-        name=venue.get("name", "Unknown"),
-        category=venue.get("category", "venue"),
-        group_size=group_size,
-        content=content[:50000],  # Increased to support multi-page combined content
-    )
-
-    try:
-        raw = await generate_content(prompt=prompt, model="gemini-2.5-flash")
-        if not raw:
-            return _no_data_fallback(venue)
-
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1]
-        if cleaned.endswith("```"):
-            cleaned = cleaned.rsplit("```", 1)[0]
-
-        result = json.loads(cleaned.strip())
-        return _apply_confidence_tier(result, venue, group_size)
-
-    except (json.JSONDecodeError, Exception) as exc:
-        logger.warning("Cost extraction failed for %s: %s", venue.get("name"), exc)
-        return _no_data_fallback(venue)
-
-
-def _apply_confidence_tier(result: dict, venue: dict, group_size: int) -> dict:
-    """
-    Apply tiered value_score and notes based on pricing confidence.
-
-    Tiers:
-      confirmed -> use Gemini's value_score as-is
-      estimated -> cap value_score at 0.5, add estimation warning
-      unknown   -> value_score 0.3, add high-uncertainty warning
-    """
-    confidence = result.get("pricing_confidence", "unknown")
-    base = result.get("base_cost", 0)
-
-    if confidence == "unknown" or base == 0:
-        # -- Tier: No price found --
-        result["value_score"] = 0.3
-        result["pricing_confidence"] = "unknown"
-        result["notes"] = (
-            "High uncertainty. Rates are quote-based or unlisted. "
-            "Budget fit is unverified. Recommend contacting venue directly."
-        )
-
-    elif confidence == "estimated":
-        # -- Tier: Estimated price --
-        result["value_score"] = min(result.get("value_score", 0.5), 0.5)
-        est_note = result.get("notes", "")
-        result["notes"] = (
-            f"Estimated from Toronto market rates for {venue.get('category', 'this venue type')}. "
-            f"{est_note}"
-        ).strip()
-
-    # else: confirmed -> keep Gemini's original value_score and notes
-
-    # Ensure per_person is always calculated
-    tca = result.get("total_cost_of_attendance", 0)
-    if tca > 0 and group_size > 0:
-        result["per_person"] = round(tca / group_size, 2)
-
-    return result
-
-
-def _no_data_fallback(venue: dict = None) -> dict:
-    """Fallback when scraping fails entirely -- no content was retrieved."""
-    name = venue.get("name", "This venue") if venue else "This venue"
     return {
-        "base_cost": 0,
-        "hidden_costs": [],
-        "total_cost_of_attendance": 0,
-        "per_person": 0,
-        "value_score": 0.3,
-        "pricing_confidence": "unknown",
-        "notes": (
-            f"High uncertainty. {name} does not publish rates online. "
-            "Budget fit is unverified. Recommend contacting venue directly."
-        ),
+        "price_range": resolved_price,
+        "confidence": confidence,
+        "value_score": _calculate_value_score(resolved_price, confidence)
     }
-
-
-# -- Main pipeline per venue -------------------------------------------
-
-async def _analyze_venue_cost(venue: dict, group_size: int) -> dict:
-    """
-    Full cost pipeline for a single venue:
-    1. Try Firecrawl /map to find pricing pages
-    2. Firecrawl /scrape to get page content
-    3. Use Gemini to extract structured pricing
-    """
-    website = venue.get("website", "")
-    combined_content = ""
-
-    if website:
-        # Step 1: Discover pricing pages
-        pricing_pages = await _firecrawl_map(website)
-
-        # Step 2: Scrape up to 3 pricing pages, plus always include the homepage
-        pages_to_scrape = pricing_pages[:3]
-        if website not in pages_to_scrape:
-            pages_to_scrape.append(website)
-
-        content_parts = []
-        for target in pages_to_scrape:
-            content = await _firecrawl_scrape(target) or ""
-            if content:
-                content_parts.append(f"--- Content from {target} ---\n{content}\n")
-
-        combined_content = "\n".join(content_parts)
-
-    if not combined_content:
-        return _no_data_fallback(venue)
-
-    # Step 3: Extract pricing with Gemini
-    return await _extract_pricing(venue, combined_content, group_size)
-
-
-# -- Node entry point ---------------------------------------------------
 
 def cost_analyst_node(state: PathfinderState) -> PathfinderState:
     """
-    Compute Total Cost of Attendance (TCA) per venue.
-
-    Steps
-    -----
-    1. For each venue, run the Firecrawl -> Gemini pipeline.
-    2. Write cost_profiles dict to state.
+    Compute price normalization per venue.
     """
     candidates = state.get("candidate_venues", [])
-    intent = state.get("parsed_intent", {})
-    group_size = intent.get("group_size", 1)
 
     if not candidates:
         logger.info("Cost Analyst: no candidates to analyze")
         return {"cost_profiles": {}}
 
-    async def _analyze_all():
-        # Limit to 3 concurrent Firecrawl calls to avoid 429 rate limits
-        sem = asyncio.Semaphore(3)
-
-        async def _throttled(v):
-            async with sem:
-                return await _analyze_venue_cost(v, group_size)
-
-        return await asyncio.gather(*[_throttled(v) for v in candidates])
-
-    try:
-        results = asyncio.run(_analyze_all())
-    except RuntimeError:
-        import nest_asyncio
-        nest_asyncio.apply()
-        results = asyncio.run(_analyze_all())
-    except Exception as exc:
-        logger.error("Cost Analyst failed: %s", exc)
-        results = [_no_data_fallback(v) for v in candidates]
-
     cost_profiles = {}
-    for venue, result in zip(candidates, results):
-        vid = venue.get("venue_id", "")
-        cost_profiles[vid] = result
+    for venue in candidates:
+        vid = venue.get("venue_id", venue.get("name", "unknown"))
+        cost_profiles[vid] = _analyze_venue_cost(venue)
 
-    scored = sum(1 for v in cost_profiles.values() if v.get("base_cost", 0) > 0)
+    scored = sum(1 for v in cost_profiles.values() if v.get("price_range"))
     logger.info("Cost Analyst priced %d/%d venues", scored, len(candidates))
 
-    return {"cost_profiles": cost_profiles}
+    return {
+        "cost_profiles": cost_profiles
+    }

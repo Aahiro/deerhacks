@@ -28,17 +28,31 @@ def _deduplicate(venues: list[dict], threshold_m: float = 100) -> list[dict]:
     """
     Remove near-duplicates by name similarity + geographic proximity.
     If two venues have the same lowercase name and are within `threshold_m`
-    metres of each other, keep the one with the higher rating.
+    metres of each other, keep the one with the higher rating but merge pricing sources.
     """
     kept: list[dict] = []
     for v in venues:
+        src = v.get("source")
+        if src == "google_places":
+            v["google_price"] = v.get("price_range")
+        elif src == "yelp":
+            v["yelp_price"] = v.get("price_range")
+
         is_dup = False
         for k in kept:
             same_name = v["name"].lower().strip() == k["name"].lower().strip()
             close = _haversine(v["lat"], v["lng"], k["lat"], k["lng"]) < threshold_m
             if same_name and close:
+                # Merge pricing data before keeping
+                if "google_price" in v and v["google_price"]:
+                    k["google_price"] = v["google_price"]
+                if "yelp_price" in v and v["yelp_price"]:
+                    k["yelp_price"] = v["yelp_price"]
+
                 # Keep the higher-rated one
                 if v.get("rating", 0) > k.get("rating", 0):
+                    v["google_price"] = k.get("google_price")
+                    v["yelp_price"] = k.get("yelp_price")
                     kept.remove(k)
                     kept.append(v)
                 is_dup = True

@@ -68,15 +68,19 @@ def critic_node(state: PathfinderState) -> PathfinderState:
         Weather Profile: {json.dumps(context['weather'])}
         Upcoming Events Nearby: {json.dumps(context['events'])}
         
-        If there's a serious risk (e.g. outdoor activity + heavy rain, traffic jam due to a marathon), output a veto.
+        Evaluate the venue against Fast-Fail Conditions:
+        - Condition A: Are there fewer than 3 viable venues after risk filtering? (Assume no for a single venue unless the user intent is extremely strict and this venue wildly misses it alongside weather/event risks).
+        - Condition B: Is there a Top Candidate Veto? (e.g., outdoor activity + heavy rain, traffic jam due to a marathon blocking access).
+        
+        If either condition is met, trigger a fast-fail.
         
         Output exact JSON:
         {{
             "risks": [
                 {{"type": "weather", "severity": "high/medium/low", "detail": "explanation"}}
             ],
-            "veto": true/false,
-            "veto_reason": "if true, short reason"
+            "fast_fail": true/false,
+            "fast_fail_reason": "if true, short reason for early termination"
         }}
         """
         
@@ -91,7 +95,7 @@ def critic_node(state: PathfinderState) -> PathfinderState:
             return venue_id, analysis
         except Exception as e:
             logger.error(f"Critic Gemini call failed for {venue_id}: {e}")
-            return venue_id, {"risks": [], "veto": False, "veto_reason": None}
+            return venue_id, {"risks": [], "fast_fail": False, "fast_fail_reason": None}
 
     async def _run_all():
         return await asyncio.gather(*[_analyze_venue(v) for v in top_candidates])
@@ -105,17 +109,17 @@ def critic_node(state: PathfinderState) -> PathfinderState:
         nest_asyncio.apply()
         results = asyncio.run(_run_all())
     
-    overall_veto = False
-    veto_reason = None
+    overall_fast_fail = False
+    fast_fail_reason = None
     
     for venue_id, analysis in results:
         risk_flags[venue_id] = analysis.get("risks", [])
-        # If any of the top 3 has a critical veto for the whole plan, we could trigger graph retry.
-        # But realistically we only veto if ALL of them are terrible, otherwise we just flag.
-        # For simplicity, if the #1 candidate gets a veto, we flag the system.
-        if analysis.get("veto") and venue_id == top_candidates[0].get("venue_id", top_candidates[0].get("name")):
-            overall_veto = True
-            veto_reason = analysis.get("veto_reason")
+        # If any of the top 3 has a critical fast-fail, we could trigger graph retry.
+        # But realistically we only fast-fail if ALL of them are terrible, otherwise we just flag.
+        # For simplicity, if the #1 candidate gets a fast-fail, we flag the system.
+        if analysis.get("fast_fail") and venue_id == top_candidates[0].get("venue_id", top_candidates[0].get("name")):
+            overall_fast_fail = True
+            fast_fail_reason = analysis.get("fast_fail_reason")
 
-    return {"risk_flags": risk_flags, "veto": overall_veto, "veto_reason": veto_reason}
+    return {"risk_flags": risk_flags, "fast_fail": overall_fast_fail, "fast_fail_reason": fast_fail_reason, "veto": overall_fast_fail, "veto_reason": fast_fail_reason}
 

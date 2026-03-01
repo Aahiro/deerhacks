@@ -13,19 +13,30 @@ from app.services.gemini import generate_content
 
 logger = logging.getLogger(__name__)
 
-_VIBE_PROMPT = """You are a venue aesthetic analyst. Analyze this venue and score its "vibe".
+_VIBE_PROMPT = """You are the PATHFINDER Vibe Matcher. You are analyzing a cafe for a {vibe_preference} vibe.
 
 Venue: {name}
 Address: {address}
 Category: {category}
 
-User's desired vibe: {vibe_preference}
+INPUT HANDLING:
 
-Based on the venue photos and information, respond with ONLY a valid JSON object (no markdown, no extra text):
+You will receive 1-3 image descriptions or metadata.
+
+If an image failed to load (e.g., Redirect Error or 404), do not penalize the venue. Instead, rely on the Review Sentiment provided in the text metadata.
+
+AESTHETIC SCORING:
+
+Score the venue from 0.0 to 1.0 based on how well it fits the "{vibe_preference}" request.
+
+Cyberpunk Criteria: Neon lighting, high-contrast colors (pinks/purples/blues), industrial materials, tech-heavy decor.
+
+OUTPUT:
+Respond with ONLY a valid JSON object (no markdown, no extra text):
 {{
-  "score": <float 0.0 to 1.0, how well this venue matches the desired vibe>,
-  "style": "<one-word style label, e.g. cozy, minimalist, industrial, vibrant>",
-  "descriptors": ["<descriptor 1>", "<descriptor 2>", "<descriptor 3>"],
+  "vibe_score": <float 0.0 to 1.0, how well this venue matches the desired vibe>,
+  "primary_style": "<one-word style label, e.g. cozy, minimalist, industrial, vibrant>",
+  "visual_descriptors": ["<descriptor 1>", "<descriptor 2>", "<descriptor 3>"],
   "confidence": <float 0.0 to 1.0, how confident you are in this assessment>
 }}
 """
@@ -96,23 +107,44 @@ def vibe_matcher_node(state: PathfinderState) -> PathfinderState:
         logger.error("Vibe Matcher failed: %s", exc)
         results = [None] * len(candidates)
 
-    # Build vibe_scores dict keyed by venue_id
+    # Build vibe_scores dict keyed by venue_id and filter candidates
     vibe_scores = {}
+    passed_candidates = []
+    
+    rejected_candidates = []
+    
     for venue, result in zip(candidates, results):
         vid = venue.get("venue_id", "")
         if result:
             vibe_scores[vid] = result
+            score = result.get("vibe_score", 0.5)
+            
+            # If the user explicitly requested a vibe (i.e. not the default neutral vibe)
+            # and the score is below our threshold (0.4), filter it out.
+            if vibe_pref != _NEUTRAL_VIBE and score < 0.4:
+                logger.info("Vibe Matcher REJECTED: %s (Score: %s)", venue.get('name'), score)
+                rejected_candidates.append((score, venue))
+            else:
+                passed_candidates.append(venue)
         else:
             # Graceful fallback — don't crash, just mark as unscored
             vibe_scores[vid] = {
-                "score": None,
-                "style": "unknown",
-                "descriptors": [],
+                "vibe_score": None,
+                "primary_style": "unknown",
+                "visual_descriptors": [],
                 "confidence": 0.0,
             }
+            passed_candidates.append(venue)
 
-    logger.info("Vibe Matcher scored %d/%d venues",
-                sum(1 for v in vibe_scores.values() if v.get("score") is not None),
-                len(candidates))
+    # Backup mechanism: ensure we pass at least 3 venues if Scout provided enough.
+    rejected_candidates.sort(key=lambda x: x[0], reverse=True)
+    while len(passed_candidates) < 3 and rejected_candidates:
+        score, venue = rejected_candidates.pop(0)
+        logger.info("Vibe Matcher RECOVERED: %s (Score: %s) to maintain minimum options", venue.get('name'), score)
+        passed_candidates.append(venue)
 
-    return {"vibe_scores": vibe_scores}
+    logger.info("Vibe Matcher scored %d venues; kept %d/%d candidates",
+                sum(1 for v in vibe_scores.values() if v.get("vibe_score") is not None),
+                len(passed_candidates), len(candidates))
+
+    return {"vibe_scores": vibe_scores, "candidate_venues": passed_candidates}

@@ -29,7 +29,7 @@ async def generate_content(
     prompt : str
         The text prompt.
     model : str
-        Model name (default: gemini-1.5-flash).
+        Model name (default: gemini-2.5-flash).
     image_urls : list[str] | None
         Optional image URLs for multimodal input.
 

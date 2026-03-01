@@ -25,13 +25,60 @@ export default function Map({ venues = [], onSelectVenue, selectedVenue, onMapRe
             style: "mapbox://styles/mapbox/dark-v11",
             center: [-79.3832, 43.6532], // Toronto default
             zoom: 12,
-            pitch: 0,
+            pitch: 45,
+            bearing: -17.6,
+            antialias: true,
             attributionControl: false,
         });
 
-
-        map.addControl(new mapboxgl.NavigationControl({ showCompass: false }), "bottom-right");
+        map.addControl(new mapboxgl.NavigationControl({ visualizePitch: true }), "bottom-right");
         map.addControl(new mapboxgl.AttributionControl({ compact: true }), "bottom-left");
+        map.addControl(
+            new mapboxgl.GeolocateControl({
+                positionOptions: { enableHighAccuracy: true },
+                trackUserLocation: true,
+                showUserHeading: true,
+            }),
+            "bottom-right"
+        );
+
+        // Add 3D buildings on load
+        map.on("load", () => {
+            const layers = map.getStyle().layers;
+            let labelLayerId;
+            for (const layer of layers) {
+                if (layer.type === "symbol" && layer.layout?.["text-field"]) {
+                    labelLayerId = layer.id;
+                    break;
+                }
+            }
+
+            map.addLayer(
+                {
+                    id: "3d-buildings",
+                    source: "composite",
+                    "source-layer": "building",
+                    filter: ["==", "extrude", "true"],
+                    type: "fill-extrusion",
+                    minzoom: 15,
+                    paint: {
+                        "fill-extrusion-color": "#625f5a",
+                        "fill-extrusion-height": [
+                            "interpolate", ["linear"], ["zoom"],
+                            15, 0,
+                            15.05, ["get", "height"],
+                        ],
+                        "fill-extrusion-base": [
+                            "interpolate", ["linear"], ["zoom"],
+                            15, 0,
+                            15.05, ["get", "min_height"],
+                        ],
+                        "fill-extrusion-opacity": 0.68,
+                    },
+                },
+                labelLayerId
+            );
+        });
 
         mapRef.current = map;
         onMapReady?.(map);
@@ -53,15 +100,6 @@ export default function Map({ venues = [], onSelectVenue, selectedVenue, onMapRe
         }
 
         // Clean up old isochrone layers
-        venues.forEach((_, idx) => {
-            const layerId = `isochrone-fill-${idx}`;
-            const outlineId = `isochrone-outline-${idx}`;
-            const sourceId = `isochrone-${idx}`;
-            if (map.getLayer(layerId)) map.removeLayer(layerId);
-            if (map.getLayer(outlineId)) map.removeLayer(outlineId);
-            if (map.getSource(sourceId)) map.removeSource(sourceId);
-        });
-        // Also clean any stale layers from previous larger results
         for (let i = 0; i < 20; i++) {
             const layerId = `isochrone-fill-${i}`;
             const outlineId = `isochrone-outline-${i}`;

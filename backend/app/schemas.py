@@ -21,6 +21,10 @@ class PlanRequest(BaseModel):
         None,
         description="List of {lat, lng} dicts for each group member",
     )
+    chat_history: Optional[List[dict]] = Field(
+        None,
+        description="Previous conversation turns for reprompting [{role, content}]",
+    )
 
 
 # ── Response ─────────────────────────────────────────────
@@ -35,11 +39,9 @@ class VenueResult(BaseModel):
     lat: float
     lng: float
     vibe_score: Optional[float] = None
-    accessibility_score: Optional[float] = None
     cost_profile: Optional[dict] = None
     why: str = ""
     watch_out: str = ""
-    isochrone_geojson: Optional[dict] = None
 
 
 class PlanResponse(BaseModel):

@@ -1,7 +1,8 @@
 """Cost Analyst test -- testing venues with explicit pricing pages."""
 import sys, os, logging
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-logging.disable(logging.CRITICAL)
+import logging
+logging.basicConfig(level=logging.WARNING)
 
 from app.agents.cost_analyst import cost_analyst_node
 
@@ -13,26 +14,28 @@ state = {
             "venue_id": "test_rock_climbing",
             "name": "Basecamp Climbing Queen West",
             "category": "rock_climbing_gym",
-            "website": "https://basecampclimbing.ca/",
+            "website": "https://basecampclimbing.ca/queen/pricing/",
             "source": "manual_test"
         },
         {
             "venue_id": "test_escape_room",
             "name": "Captive Escape Rooms Toronto",
             "category": "escape_room",
-            "website": "https://captiveescaperooms.com/toronto/",
+            "website": "https://captiverooms.com/toronto",
             "source": "manual_test"
         }
     ],
     "cost_profiles": {},
 }
 
+import logging
+logging.getLogger("app.agents.cost_analyst").setLevel(logging.DEBUG)
+
 print(f"Testing {len(state['candidate_venues'])} venues with explicit pricing websites...")
+updated_state = cost_analyst_node(state)
+profiles = updated_state.get("cost_profiles", {})
 
-state = cost_analyst_node(state)
-profiles = state.get("cost_profiles", {})
-
-with open("tests/cost_results_explicit.txt", "w", encoding="utf-8") as f:
+with open("cost_results_explicit.txt", "w", encoding="utf-8") as f:
     f.write("Cost Analyst Results (Explicit Pricing Venues)\n")
     f.write("=" * 50 + "\n\n")
 

@@ -40,16 +40,6 @@ _VIBE_KEYWORDS = {
     "likes", "dislikes", "prefers", "preference",
 }
 
-_ACCESS_KEYWORDS = {
-    "near", "nearby", "close", "closest", "walking distance", "transit",
-    "subway", "bus", "ttc", "streetcar", "drive", "driving", "commute",
-    "travel", "distance", "far", "location", "directions", "accessible",
-    "accessibility", "parking", "bike", "cycling", "walkable",
-    "downtown", "midtown", "uptown", "east end", "west end", "north",
-    "south", "neighbourhood", "neighborhood", "area", "district",
-    "central", "convenient", "easy to get to", "reachable",
-}
-
 _CRITIC_KEYWORDS = {
     "weather", "rain", "snow", "cold", "hot", "outdoor", "outside",
     "patio", "rooftop", "garden", "park", "beach", "pool",
@@ -134,7 +124,6 @@ def _keyword_fallback(raw_prompt: str) -> dict:
     # Check each agent's keywords against the prompt
     cost_hits = sum(1 for kw in _COST_KEYWORDS if kw in prompt_lower)
     vibe_hits = sum(1 for kw in _VIBE_KEYWORDS if kw in prompt_lower)
-    access_hits = sum(1 for kw in _ACCESS_KEYWORDS if kw in prompt_lower)
     critic_hits = sum(1 for kw in _CRITIC_KEYWORDS if kw in prompt_lower)
 
     if cost_hits > 0:
@@ -145,24 +134,20 @@ def _keyword_fallback(raw_prompt: str) -> dict:
         active_agents.append("vibe_matcher")
         agent_weights["vibe_matcher"] = min(0.4 + vibe_hits * 0.1, 1.0)
 
-    if access_hits > 0:
-        active_agents.append("access_analyst")
-        agent_weights["access_analyst"] = min(0.4 + access_hits * 0.1, 1.0)
-
     if critic_hits > 0:
         active_agents.append("critic")
         agent_weights["critic"] = min(0.4 + critic_hits * 0.1, 1.0)
 
-    # If group activity with multiple people, default-activate cost + access + critic
+    # If group activity with multiple people, default-activate cost + critic
     if group_size > 1:
-        for agent in ["cost_analyst", "access_analyst", "critic"]:
+        for agent in ["cost_analyst", "critic"]:
             if agent not in active_agents:
                 active_agents.append(agent)
                 agent_weights[agent] = 0.5
 
     # If nothing beyond scout matched, activate all with moderate weight
     if len(active_agents) == 1:
-        active_agents = ["scout", "vibe_matcher", "cost_analyst", "access_analyst", "critic"]
+        active_agents = ["scout", "vibe_matcher", "cost_analyst", "critic"]
         agent_weights = {a: 0.6 for a in active_agents}
         agent_weights["scout"] = 1.0
 
@@ -188,41 +173,35 @@ def _keyword_fallback(raw_prompt: str) -> dict:
     }
 
 
-# ── User profile weight adjustment ───────────────────────────────────
-
-def _apply_user_profile_weights(agent_weights: dict, user_profile: dict) -> dict:
+def _apply_user_profile_weights(
+    agent_weights: dict, user_profile: dict
+) -> dict:
     """
-    Nudge agent weights based on the authenticated user's saved preferences.
-
-    Preferences come from the Auth0 JWT's app_metadata.preferences field:
-      budget_sensitive    → boost cost_analyst weight
-      accessibility_priority → boost access_analyst weight
-      vibe_first          → boost vibe_matcher weight
-      risk_averse         → boost critic weight
+    Adjust agent weights based on the authenticated user's profile metadata.
+    Reads app_metadata set by Auth0 rules/actions.
     """
-    prefs = user_profile.get("app_metadata", {}).get("preferences", {})
-    if not prefs:
-        return agent_weights
+    meta = user_profile.get("app_metadata", {})
+    preferences = meta.get("preferences", {})
 
-    weights = dict(agent_weights)  # copy so we don't mutate
+    # Budget sensitivity
+    if preferences.get("budget_sensitive"):
+        agent_weights["cost_analyst"] = min(
+            agent_weights.get("cost_analyst", 0.5) + 0.2, 1.0
+        )
 
-    if prefs.get("budget_sensitive"):
-        weights["cost_analyst"] = min(1.0, weights.get("cost_analyst", 0.5) + 0.2)
-        logger.info("Commander: boosting cost_analyst (budget_sensitive user)")
+    # Vibe-first user
+    if preferences.get("vibe_first"):
+        agent_weights["vibe_matcher"] = min(
+            agent_weights.get("vibe_matcher", 0.4) + 0.2, 1.0
+        )
 
-    if prefs.get("accessibility_priority"):
-        weights["access_analyst"] = min(1.0, weights.get("access_analyst", 0.5) + 0.2)
-        logger.info("Commander: boosting access_analyst (accessibility_priority user)")
+    # Risk-averse user
+    if preferences.get("risk_averse"):
+        agent_weights["critic"] = min(
+            agent_weights.get("critic", 0.4) + 0.2, 1.0
+        )
 
-    if prefs.get("vibe_first"):
-        weights["vibe_matcher"] = min(1.0, weights.get("vibe_matcher", 0.5) + 0.2)
-        logger.info("Commander: boosting vibe_matcher (vibe_first user)")
-
-    if prefs.get("risk_averse"):
-        weights["critic"] = min(1.0, weights.get("critic", 0.5) + 0.2)
-        logger.info("Commander: boosting critic (risk_averse user)")
-
-    return weights
+    return agent_weights
 
 
 # ── Main node entry point ─────────────────────────────────────────────
@@ -233,18 +212,53 @@ def commander_node(state: PathfinderState) -> PathfinderState:
 
     Steps
     -----
-    1. Call Gemini 1.5 Flash to classify intent & extract parameters.
-    2. Determine complexity tier (quick / full / adversarial).
-    3. Compute dynamic agent weights based on keywords.
-    4. Return updated state with parsed_intent, complexity_tier, agent_weights.
+    1. Check Auth0 identity and load user profile metadata.
+    2. Call Gemini 1.5 Flash to classify intent & extract parameters.
+    3. Determine complexity tier (quick / full / adversarial).
+    4. Compute dynamic agent weights based on keywords and user profile.
+    5. Return updated state with parsed_intent, complexity_tier, agent_weights, user_profile.
 
     Fallback: If Gemini is unavailable, use keyword-based heuristics.
     """
     raw_prompt = state.get("raw_prompt", "")
+    auth_user_id = state.get("auth_user_id")
+    
+    # ── Fetch Auth0 Profile if available ──
+    user_profile = state.get("user_profile")
+    if auth_user_id and not user_profile:
+        if auth_user_id == "auth0|local_test" or not auth_user_id.startswith("auth0|"):
+            logger.info("Skipping Auth0 Management API lookup for simulated or non-standard user_id.")
+            user_profile = {"app_metadata": {"preferences": {"budget_sensitive": False, "vibe_first": True}}} # standard profile
+        else:
+            from app.services.auth0 import auth0_service
+            try:
+                user_profile = asyncio.run(auth0_service.get_user_profile(auth_user_id))
+            except RuntimeError:
+                import nest_asyncio
+                nest_asyncio.apply()
+                user_profile = asyncio.run(auth0_service.get_user_profile(auth_user_id))
+            except Exception as e:
+                logger.warning(f"Failed to fetch user profile in Commander: {e}")
+                user_profile = {}
+    
+    profile_context = ""
+    if user_profile:
+        prefs = user_profile.get("app_metadata", {}).get("preferences", {})
+        if prefs:
+            profile_context = f"\nUser Preferences Context: {json.dumps(prefs)}\nAdjust agent weights to favor these preferences."
 
-    prompt = f"""
-    You are the PATHFINDER Commander Agent. Analyze the user's query and output a JSON execution plan.
-    Query: "{raw_prompt}"
+    prompt = f"""You are the PATHFINDER Commander. Your first task is to establish the Execution Context.
+
+OAUTH & IDENTITY LOGIC:
+Check the user_id. If it is auth0|local_test or looks simulated, set identity_context to "standard_profile".
+Do NOT request a Management API lookup if the user_id does not follow the auth0|{{id}} format.
+Annotate the plan with requires_auth: false if the user is just looking for public cafes.
+
+COMPLEXITY TIERING:
+For "Cyberpunk Cafe", activate: SCOUT, VIBE, ACCESS, CRITIC.
+Note: Skip COST if the intent is purely aesthetic and no booking is requested to save time.
+
+    Query: "{raw_prompt}"{profile_context}
     
     Determine:
     1. Intent parameters (activity, group_size, budget, location, vibe).
@@ -252,8 +266,13 @@ def commander_node(state: PathfinderState) -> PathfinderState:
        - 'tier_1': Simple lookup (Scout only or light analysis)
        - 'tier_2': Multi-factor personal (Group activity, constraints -> Scout, Cost, Access, Critic, maybe Vibe)
        - 'tier_3': Strategic/Business (Deep research -> all 5 agents)
-    3. Active Agents: List the agents to activate from: ["scout", "vibe_matcher", "access_analyst", "cost_analyst", "critic"]. Scout is always mandatory.
+    3. Active Agents: List the agents to activate from: ["scout", "vibe_matcher", "cost_analyst", "critic"]. Scout is always mandatory.
+       IMPORTANT: DO NOT activate "vibe_matcher" unless the user's query specifically mentions aesthetics, vibes, beauty, theme, or atmosphere. For all other queries, omit it.
+       IMPORTANT: Skip "cost_analyst" if the intent is purely aesthetic and no booking is requested.
     4. Agent Weights: Assign a float (0.0 to 1.0) to each activated agent indicating its importance.
+    5. OAuth Requirements: Detect if this request requires acting on behalf of the user (e.g., booking, sending an email, checking a calendar).
+       - If yes, set "requires_oauth": true, and list the "oauth_scopes" (e.g., "email.send", "calendar.read") and "allowed_actions" (e.g., "send_email", "check_availability").
+       - If no, set "requires_oauth": false, and leave arrays empty.
     
     Output exactly in this JSON format:
     {{
@@ -265,11 +284,15 @@ def commander_node(state: PathfinderState) -> PathfinderState:
         "vibe": "..."
       }},
       "complexity_tier": "tier_2",
-      "active_agents": ["scout", "cost_analyst", "access_analyst", "critic"],
+      "active_agents": ["scout", "cost_analyst", "critic"],
       "agent_weights": {{
         "scout": 1.0,
         ...
-      }}
+      }},
+      "requires_oauth": false,
+      "oauth_scopes": [],
+      "allowed_actions": [],
+      "identity_context": "standard_profile"
     }}
     Do not output markdown code blocks. Only the raw JSON string.
     """
@@ -292,18 +315,23 @@ def commander_node(state: PathfinderState) -> PathfinderState:
         logger.warning("Commander Gemini call failed: %s — using keyword fallback", e)
         plan = _keyword_fallback(raw_prompt)
 
-    agent_weights = plan.get("agent_weights", {"scout": 1.0})
-
-    user_profile = state.get("user_profile", {})
-    if user_profile:
-        agent_weights = _apply_user_profile_weights(agent_weights, user_profile)
+    # If we're on a retry (veto or fast_fail was set), clear the flags and
+    # increment retry_count so the cap in _should_retry works correctly.
+    was_retry = bool(state.get("veto") or state.get("fast_fail"))
 
     return {
         "parsed_intent": plan.get("parsed_intent", {}),
         "complexity_tier": plan.get("complexity_tier", "tier_2"),
         "active_agents": plan.get("active_agents", ["scout"]),
-        "agent_weights": agent_weights,
-        "veto": False,  # clear previous veto so Critic evaluates fresh on retry
-        # only increment when we're actually retrying (incoming veto was True)
-        "retry_count": state.get("retry_count", 0) + (1 if state.get("veto") else 0),
+        "agent_weights": plan.get("agent_weights", {"scout": 1.0}),
+        "requires_oauth": plan.get("requires_oauth", False),
+        "oauth_scopes": plan.get("oauth_scopes", []),
+        "allowed_actions": plan.get("allowed_actions", []),
+        "user_profile": user_profile,  # Pass profile down to other agents
+        # Clear retry flags so the Critic starts fresh on the second pass
+        "veto": False,
+        "fast_fail": False,
+        "veto_reason": None,
+        "fast_fail_reason": None,
+        "retry_count": state.get("retry_count", 0) + (1 if was_retry else 0),
     }

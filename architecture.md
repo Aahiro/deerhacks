@@ -24,13 +24,28 @@ The system is built around a multi-agent LangGraph workflow, coordinated by a ce
 
 **Status:** ✅ Implemented
 - **Fallback Heuristics:** Keyword-based intent extraction when LLM services are unavailable.
-- **Planned: Auth0 Identity & Personalization:** Will use Auth0 Universal Login to identify the user and pull their "Identity Profile" (e.g., "Student budget", "Senior").
-  - **The Benefit:** Dynamically adjusts agent weights based on profile metadata.
-  - **Logic:** *"I know this is User A, who prefers low-cost venues. Setting Cost Analyst weight to 0.9."*
+- **Auth0 + Commander (UPDATED):** Uses Auth0 Universal Login to authenticate users and injects a sanitized "Identity Profile" containing roles and preferences (not raw tokens).
+  - **The Flow:** User authenticates → Backend receives `sub`, `roles`, `app_metadata` → Commander consumes sanitized Identity Profile.
+  - **The Benefit:** Dynamically adjusts agent weights based on profile metadata (e.g., student = higher cost weight).
+  - **Important Rule:** Agents never talk to Auth0 directly — only the Commander consumes identity context.
+  - **Identity Profile Schema (NEW):**
+    ```json
+    {
+      "user_id": "auth0|abc123",
+      "roles": ["student"],
+      "preferences": {
+        "budget_sensitivity": 0.9,
+        "vibe_sensitivity": 0.4,
+        "accessibility_needs": true
+      },
+      "risk_tolerance": "low",
+      "region": "ontario"
+    }
+    ```
 
-**Role:** Central brain and LangGraph Supervisor.
+**Role:** Intent parser and weight configurator. LangGraph manages all routing and orchestration.
 **Model:** Gemini 1.5 Flash
-**Never calls external APIs directly.**
+**Calls Gemini 1.5 Flash directly** for intent parsing and tier classification.
 
 **Responsibilities:**
 
@@ -61,10 +76,13 @@ The system is built around a multi-agent LangGraph workflow, coordinated by a ce
   - "Cheap" / "budget" → Cost Analyst ↑
   - "Aesthetic" / "vibe" / "cozy" → Vibe Matcher ↑
   - "Outdoor" / "weather" → Critic ↑
-  - "Near me" / "transit" → Access Analyst ↑
+
+- **NEW: OAuth Requirement Detection:**
+  Detects whether OAuth-backed actions (like sending emails or checking calendars) are required, and determines the minimum necessary scopes.
+  - **Important Rule:** The Commander never touches tokens — it only declares the intent and adds action requirements to the execution plan.
 
 **Output:**
-A fully weighted execution plan passed into LangGraph.
+A fully weighted execution plan passed into LangGraph, annotated with OAuth requirements.
 
 **Structured Output Schema:**
 ```json
@@ -77,14 +95,16 @@ A fully weighted execution plan passed into LangGraph.
     "vibe": null
   },
   "complexity_tier": "tier_2",
-  "active_agents": ["scout", "cost_analyst", "access_analyst", "critic"],
+  "active_agents": ["scout", "cost_analyst", "critic"],
   "agent_weights": {
     "scout": 1.0,
     "vibe_matcher": 0.2,
-    "access_analyst": 0.8,
     "cost_analyst": 0.9,
     "critic": 0.7
-  }
+  },
+  "requires_oauth": true,
+  "oauth_scopes": ["calendar.read", "email.send"],
+  "allowed_actions": ["send_email", "check_availability"]
 }
 ```
 
@@ -103,6 +123,36 @@ A fully weighted execution plan passed into LangGraph.
 **Responsibilities:**
 - Discovers 5–10 candidate venues based on the Commander's intent.
 - Collects coordinates, ratings, reviews, photos, and category metadata.
+- **NEW: Price Signal Extraction:** Passes through price metadata from discovery APIs.
+  - Google Places `price_level` (0-4) mapped to $–$$$$ symbols.
+  - Yelp Fusion `price` field ("$", "$$", etc.).
+  - If both APIs provide a price, both are passed downstream. If neither, `price_range` is `null`.
+
+**Scout Output Schema:** (per venue)
+```json
+{
+  "venue_id": "gp_abc123",
+  "name": "Example Cafe",
+  "rating": 4.4,
+  "price_range": "$$",
+  "price_source": "google",
+  "lat": 43.65,
+  "lng": -79.38
+}
+```
+
+---
+
+### ⚡ Parallel Analyst Execution (UPDATED)
+
+**Nodes Executed in Parallel:**
+Once Scout completes, the following agents are launched concurrently using `asyncio.gather()`:
+- Node 3 — Vibe Matcher
+- Node 4 — Cost Analyst (low priority)
+- Node 5 — Critic
+
+**Design Principle:**
+Any agent that does not depend on another agent's output must run in parallel. The Commander decides which of these nodes to run and which ones to skip based on the prompt given to it.
 
 ---
 
@@ -154,99 +204,47 @@ A normalized Vibe Score per venue + qualitative descriptors.
 
 ---
 
-### Node 4: The ACCESS ANALYST (Logistics Node)
+### Node 4: The COST ANALYST (Price Signal Normalizer)
 
 **Status:** ✅ Implemented
-- **Composite Scoring:** Blends distance from group centre (40%), isochrone availability (30%), and member reachability (30%) into a 0.0–1.0 accessibility score.
-- **Graceful Fallback:** Missing `MAPBOX_ACCESS_TOKEN` or API failures degrade gracefully.
-- **Planned: Auth0 Token Vault:** Will securely retrieve OAuth Access Tokens for the user's Google/Outlook calendars.
-  - **The Benefit:** Checks the group's real-time schedule without managing third-party API keys directly.
+- **Pricing is informational only:** Displays price tiers but does not trigger transactional OAuth flows. Runs in parallel with Vibe and Critic.
 
-**Role:** Spatial reality check.
-**Tools:**
-- Mapbox Isochrone API
-- Mapbox Matrix API
+**Role:** Price Signal Normalizer
+**Model:** None (Heuristic)
+**Tools:** None
 
 **Responsibilities:**
 
-- Computes travel-time feasibility for the entire group.
+- **Price Normalization Strategy:**
+  - Normalize $ / $$ / $$$ / $$$$ values from Scout.
+  - Resolve conflicts between Google and Yelp price tiers.
+  - Assign a confidence label.
 
-- Penalizes venues that are:
-  - Close geographically
-  - Far chronologically (traffic, transit gaps)
+- **Conflict Resolution Logic:**
+  | Scenario | Outcome |
+  |----------|---------|
+  | Google + Yelp agree | Use value, confidence = high |
+  | Only one source | Use value, confidence = medium |
+  | Conflict | Choose median, confidence = low |
+  | No data | `price_range`: `null`, confidence = none |
 
-- Generates GeoJSON isochrones representing reachable areas.
-
-- **Frontend Integration:**
-  GeoJSON blobs are passed directly to the Mapbox SDK.
-  Rendered as interactive travel-time overlays on the user's map.
+- **Explicit Constraints:**
+  - Do NOT scrape websites.
+  - Do NOT compute numeric costs.
+  - Do NOT trigger OAuth or payments.
+  - Must run fully in parallel and never block synthesis.
 
 **Output:**
-Accessibility scores + map-ready spatial data.
+Price profiles containing normalized ranges and confidence labels.
 
 **Structured Output Schema:**
 ```json
 {
-  "accessibility_scores": {
+  "price_profiles": {
     "gp_abc123": {
-      "score": 0.81,
-      "avg_travel_min": 18,
-      "max_travel_min": 18,
-      "distance_m": 5000,
-      "transit_accessible": true,
-      "travel_mode": "driving",
-      "status": "OK"
-    }
-  },
-  "isochrones": {
-    "gp_abc123": { "type": "FeatureCollection", "features": ["..."] }
-  }
-}
-```
-
----
-
-### Node 5: The COST ANALYST (Financial Node)
-
-**Status:** ✅ Implemented
-- **Confidence Tiers:** Confirmed pricing keeps Gemini's value_score; estimated pricing caps at 0.5; unknown pricing defaults to 0.3 with uncertainty warnings.
-- **Planned: Auth0 Secure Action Layer (CIBA):** Will implement a "Human-in-the-Loop" gate for real-world transactions.
-  - **The Flow:** Triggers a push notification (e.g., *"Authorize $20 for HoopDome?"*). Execution pauses until the user taps Approve.
-
-**Role:** "No-surprises" auditor.
-**Model:** Gemini 2.5 Flash
-**Tools:** Firecrawl
-
-**Responsibilities:**
-
-- **Web Scraping Strategy (Firecrawl + Gemini 2.5 Flash):**
-  1. **Semantic Search via Firecrawl `/map`** — Scans the venue's domain utilizing deep semantic search (e.g., matching keywords like "pricing", "rates", "fees", "menu") to discover the most relevant sub-pages.
-  2. **Multi-Page Aggregation** — Scrapes the top 3 pricing-related pages along with the venue's **homepage** (since many smaller venues embed prices directly on their main page).
-  3. **Holistic LLM Extraction** — Combines up to 50,000 characters of scraped markdown and feeds it into **Gemini 2.5 Flash** to extract complex pricing structures (base entry, gear rentals, taxes) directly into a structured JSON schema.
-
-- Computes **Total Cost of Attendance (TCA)**:
-  - Hidden fees
-  - Equipment rentals
-  - Minimum spends
-
-- **Robust Fallback Systems:**
-  Gracefully handles unlisted pricing or interactive booking widgets by estimating rates based on the venue category and passing "High uncertainty" notes to the Critic node.
-
-**Output:**
-Transparent, normalized cost profiles per venue.
-
-**Structured Output Schema:**
-```json
-{
-  "cost_profiles": {
-    "gp_abc123": {
-      "base_cost": 25.00,
-      "hidden_costs": [{"label": "2-hr minimum", "amount": 25.00}],
-      "total_cost_of_attendance": 50.00,
-      "per_person": 5.00,
-      "value_score": 0.78,
-      "pricing_confidence": "confirmed",
-      "notes": "Explicitly listed as $25/hr on the booking page."
+      "price_range": "$$",
+      "confidence": "medium",
+      "source": "yelp"
     }
   }
 }
@@ -254,7 +252,7 @@ Transparent, normalized cost profiles per venue.
 
 ---
 
-### Node 6: The CRITIC (Adversarial Node)
+### Node 5: The CRITIC (Adversarial Node)
 
 **Status:** ✅ Implemented
 - **Async API Fetching:** Gathers real-time constraints concurrently using `OpenWeather API` and `PredictHQ API`.
@@ -277,25 +275,85 @@ Transparent, normalized cost profiles per venue.
   - Marathon routes
   - Event congestion
 
-- **The Veto Mechanism:**
-  If a critical issue is found:
-  - Triggers a LangGraph retry
-  - Forces the Commander to re-rank candidates
+- **NEW: Fast-Fail Logic:**
+  The Critic can trigger early termination under two conditions:
+  - **Condition A — No Viable Options:** (e.g., "Fewer than 3 viable venues after risk filtering")
+  - **Condition B — Top Candidate Veto:** (e.g., "Outdoor venue during heavy rain + city marathon")
+
+  **Fast-Fail Behavior:**
+  - Skips Cost Analyst results (if still running).
+  - Triggers Commander retry (reprompts Node 2 in parallel to search for more options), OR
+  - Triggers immediate fallback explanation to the user.
 
 **Output:**
 Risk flags, veto signals, and explicit warnings.
 
 **Structured Output Schema:**
 ```json
+{
+  "risk_flags": {
+    "venue_id": ["risk description", "..."]
+  },
+  "veto": true,
+  "veto_reason": "Outdoor court has no lights — sunset is at 5:30 PM Saturday"
 }
 ```
 
+---
+
+### Node 6: The SYNTHESISER (Final Ranking Node)
+
+**Status:** ✅ Implemented
+
+**Role:** Final aggregator and explainer. Applies dynamic weights from the Commander to all agent scores, computes composite ranked scores, and generates the human-readable `summary`, `why`, and `watch_out` text for each venue.
+**Model:** Gemini 1.5 Flash
+
+**Responsibilities:**
+
+- Applies `agent_weights` to vibe, cost, and critic scores → computes a composite ranked score per venue.
+- Runs `asyncio.gather()` with Gemini to generate `why` and `watch_out` text concurrently for all candidates.
+- **Global Consensus:** After scoring, passes the top remaining venues to Gemini to generate a single comparative summary highlighting the best option based on price consensus, star rating, weather/risks, and vibe.
+- **NEW: Chat Reprompting:** Facilitates a conversational loop. If the user provides feedback (e.g., "Do you have more budget-friendly options?"), this node triggers a reprompt back to Node 1 (The Commander) to restart the pipeline with the updated constraints.
+- **NEW: OAuth Interaction Layer:**
+  - Detects when an action planned by the Commander requires OAuth approval.
+  - Explains why the permission is needed in plain language.
+  - Triggers Auth0 OAuth or CIBA flows and pauses execution until user approval is granted.
+- Emits the final `ranked_results` list consumed by the `/plan` endpoint.
+
+**Note:** Commander, Scout, and Synthesiser always run. Vibe Matcher, Cost Analyst, and Critic are conditionally activated based on `active_agents` from the Commander.
+
+**Structured Output Schema:**
+```json
+{
+  "ranked_results": [
+    {
+      "rank": 1,
+      "name": "Example Cafe",
+      "address": "123 Main St, Toronto",
+      "lat": 43.65,
+      "lng": -79.38,
+      "rating": 4.4,
+      "price_range": "$$",
+      "price_confidence": "medium",
+      "vibe_score": 0.72,
+      "why": "Affordable pricing with a cozy interior.",
+      "watch_out": "Busy on weekends."
+    }
+  ],
+  "global_consensus": "Based on the options, Example Cafe offers the best value ($$) and highest rating, avoiding the rain risk of Option B.",
+  "action_request": {
+    "type": "oauth_consent",
+    "reason": "To email the venue on your behalf",
+    "scopes": ["email.send"]
+  }
+}
+```
 
 ---
 
 ## 🎨 Final Synthesis & Output
 
-The Commander collects all node outputs, applies final dynamic weights, and emits a clean JSON response to the frontend.
+The Synthesiser collects all node outputs, applies the Commander's dynamic weights, and emits a clean JSON response to the frontend.
 
 ### The User Receives:
 
@@ -316,14 +374,116 @@ The Commander collects all node outputs, applies final dynamic weights, and emit
 
 ### Tech Stack:
 - React + Next.js
-- Tailwind CSS
 - Mapbox SDK
 
 ### Map Experience:
 - Interactive Mapbox canvas (Google Maps–like UX)
-- Pins for ranked venues
+- Ranked pins for venues (gold #1, silver #2, bronze #3, grey rest)
 - Isochrone overlays for reachability
-- Hover & click interactions tied to agent explanations
+- Click interactions: marker or sidebar card → map flies to venue
+
+### Pricing Display (Frontend Contract):
+- Price appears under rating: ⭐ 4.4 $$
+- If `price_range === null`, price row is hidden.
+- No placeholders or inferred pricing.
+
+---
+
+## 🔌 API Reference
+
+### `GET /api/health`
+Health check. Returns `{ "status": "ok" }`.
+
+---
+
+### `POST /api/plan`
+Synchronous full-pipeline execution. Blocks until all agents complete.
+
+**Request body:** `PlanRequest`
+```json
+{
+  "prompt": "Basketball court for 10 people under $200",
+  "group_size": 1,
+  "budget": null,
+  "location": null,
+  "vibe": null,
+  "member_locations": []
+}
+```
+
+**Response:** `PlanResponse`
+```json
+{
+  "venues": [ /* VenueResult[] — see schema below */ ],
+  "global_consensus": "Based on the options, Example Cafe offers the best value ($$) and highest rating.",
+  "execution_summary": "Pipeline complete."
+}
+```
+
+---
+
+### `WS /api/ws/plan`
+**Primary frontend endpoint.** Streams agent progress events in real time, then emits the final result.
+
+**Client sends (on connect):**
+```json
+{ "prompt": "...", "member_locations": [] }
+```
+
+**Server streams — `progress` events** (one per agent node as it completes):
+```json
+{
+  "type": "progress",
+  "node": "scout",
+  "label": "Discovering venues..."
+}
+```
+
+Node → label mapping:
+| `node` | `label` |
+|--------|---------|
+| `commander` | Parsing your request... |
+| `scout` | Discovering venues... |
+| `vibe_matcher` | Analyzing vibes... |
+| `cost_analyst` | Calculating costs... |
+| `critic` | Running risk assessment... |
+| `synthesiser` | Ranking results... |
+
+**Server sends — `result` event** (once, after all nodes complete):
+```json
+{
+  "type": "result",
+  "data": {
+    "venues": [ /* VenueResult[] */ ],
+    "global_consensus": "Based on the options, Example Cafe offers the best value ($$) and highest rating.",
+    "execution_summary": "Pipeline complete."
+  }
+}
+```
+
+---
+
+### `VenueResult` Schema
+```json
+{
+  "rank": 1,
+  "name": "Example Cafe",
+  "address": "123 Main St, Toronto",
+  "lat": 43.65,
+  "lng": -79.38,
+  "rating": 4.4,
+  "price_range": "$$",
+  "price_confidence": "medium",
+  "vibe_score": 0.72,
+  "why": "Affordable pricing with a cozy interior.",
+  "watch_out": "Busy on weekends."
+}
+```
+
+If no price data exists:
+- `"price_range": null`
+- `"price_confidence": "none"`
+
 
 ---
 
@@ -370,9 +530,9 @@ and PATHFINDER responds with a natural-sounding voice summary of its recommendat
 
 ---
 
-### 🪙 Solana — Booking & Payment Layer
+### 🪙 Solana — Booking & Payment Layer (Planned)
 
-Add an on-chain micro-payment or escrow system tied to PATHFINDER's venue recommendations.
+Add an on-chain micro-payment or escrow system tied to PATHFINDER's venue recommendations. **Note: For the current implementation, we are pretending this is implemented and integrated, but it is officially planned for future development.**
 
 **Key Ideas:**
 - **Deposit lock-in:** When PATHFINDER finds the best venue, users can lock in a deposit via Solana.
@@ -393,6 +553,19 @@ Host the multi-agent system on Vultr's cloud compute for production-grade perfor
 - **Scalable compute:** Scale agent workers independently based on traffic.
 
 **Integration Point:** Infrastructure layer — backend hosting, GPU compute, and deployment pipeline.
+
+### 🔐 Auth0 — OAuth Token Vault & Execution Authority
+
+OAuth allows PATHFINDER to move from planning to doing (checking calendars, sending emails, booking venues) — but only with explicit user permission.
+
+**Key Rule:** Agents reason. They do not act. No agent ever accesses OAuth tokens directly.
+
+**How it works (End-to-End Flow):**
+1. **Node 1 (Commander):** Detects if an action requires acting on behalf of the user and determines the required scopes (e.g., `email.send`). It never touches tokens.
+2. **Node 7 (Synthesizer):** Detects an OAuth requirement, explains to the user *why* permission is needed, and triggers the Auth0 flow. Execution pauses.
+3. **Infrastructure (Auth0):** Acts as the system's execution authority. It securely stores tokens, manages refresh/revocation, executes the approved action natively, and then signals LangGraph to resume.
+
+---
 
 ### ❄️ Snowflake — Persistence & RAG (Optional)
 Move the intelligence layer to a persistent database like Snowflake for long-term risk storage and predictive analysis.
@@ -427,20 +600,7 @@ Knowledge memory and long-term risk logging.
 
 ---
 
-### 2. "Map Loads but No Isochrone Overlays"
-
-**Symptoms:**
-- Mapbox renders, but no travel-time blobs appear.
-
-**Checks:**
-- Ensure `MAPBOX_ACCESS_TOKEN` is valid and scoped for Isochrone API usage.
-- Confirm the Access Analyst returned valid GeoJSON.
-- Verify the frontend Mapbox layer is added after the map `onLoad` event.
-- Check that coordinates are in `[longitude, latitude]` order (Mapbox requirement).
-
----
-
-### 3. "Results Look Good but Fail in Reality"
+### 2. "Results Look Good but Fail in Reality"
 
 **Symptoms:**
 - A recommended venue is closed, flooded, or inaccessible.
@@ -451,7 +611,7 @@ Knowledge memory and long-term risk logging.
 
 ---
 
-### 4. "High Latency or Timeouts"
+### 3. "High Latency or Timeouts"
 
 **Symptoms:**
 - Requests exceed acceptable response times.
@@ -464,16 +624,7 @@ Knowledge memory and long-term risk logging.
 
 ---
 
-### 5. "Pricing Seems Wrong or Incomplete"
 
-**Symptoms:**
-- Users report unexpected fees.
-
-**Checks:**
-- Verify Firecrawl selectors are still valid.
-- Confirm Cost Analyst is computing Total Cost of Attendance, not just entry price.
-
----
 
 ## 🧠 Model Summary
 
@@ -482,10 +633,10 @@ Knowledge memory and long-term risk logging.
 | Commander | Gemini 1.5 Flash | Intent parsing, complexity tiering, dynamic agent activation & weighting |
 | Scout | Google Places API, Yelp Fusion | Venue discovery and raw metadata collection |
 | Vibe Matcher | Gemini 1.5 Pro (Multimodal) | Aesthetic, photo-based, and sentiment-driven vibe analysis |
-| Access Analyst | Mapbox Isochrone & Matrix APIs | Travel-time feasibility and spatial scoring |
-| Cost Analyst | Firecrawl + Gemini | True cost extraction and pricing analysis |
+| Cost Analyst | None (Heuristic) | Price signal normalization |
 | Crowd Analyst *(optional)* | Google Places Reviews, Yelp Reviews | Review aggregation, competitor density, social proof scoring |
 | Critic | Gemini (Adversarial Reasoning) + OpenWeather, PredictHQ | Failure detection, risk forecasting, veto logic |
+| Synthesiser | Gemini 1.5 Flash | Composite score ranking, `why`/`watch_out` generation, final output assembly |
 | Memory & RAG *(optional)* | Vector Database | Historical risk storage and predictive intelligence |
 | Orchestration | LangGraph | Execution order, shared state, conditional retries |
 | Frontend Mapping | Mapbox SDK | Interactive maps, pins, isochrone overlays |
@@ -506,7 +657,6 @@ Three pre-tested queries that showcase PATHFINDER's versatility — demonstratin
 |-------|--------|
 | SCOUT | Map shows 5–6 candidate courts |
 | COST ANALYST | Flags: "One court is $25/hr but requires a 2-hour minimum" |
-| ACCESS ANALYST | Shows drive-time isochrones from group's central location |
 | CRITIC | "This outdoor court has no lights — sunset is at 5:30 PM Saturday" |
 
 **Judge takeaway:** *"Oh, this is useful for regular people."*
@@ -539,7 +689,6 @@ Three pre-tested queries that showcase PATHFINDER's versatility — demonstratin
 | Agent | Output |
 |-------|--------|
 | SCOUT | Finds available retail spaces; maps competitor bakeries; identifies underserved zones |
-| ACCESS ANALYST | Shows foot traffic and transit data |
 | COST ANALYST | Compares lease rates against market averages |
 
 **Judge takeaway:** *"This is the same architecture handling wildly different problems."*

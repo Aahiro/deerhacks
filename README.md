@@ -45,9 +45,8 @@ deerhacks/
 │       │   ├── commander.py     # Node 1 — Orchestrator
 │       │   ├── scout.py         # Node 2 — Discovery
 │       │   ├── vibe_matcher.py  # Node 3 — Vibe scoring
-│       │   ├── access_analyst.py# Node 4 — Logistics
-│       │   ├── cost_analyst.py  # Node 5 — Cost auditing
-│       │   └── critic.py        # Node 6 — Adversarial risk
+│       │   ├── cost_analyst.py  # Node 4 — Cost auditing
+│       │   └── critic.py        # Node 5 — Adversarial risk
 │       ├── services/
 │       │   ├── snowflake.py     # Node 7 — Memory & RAG
 │       │   └── cache.py         # Redis caching (optional)

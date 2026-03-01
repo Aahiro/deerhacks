@@ -49,7 +49,7 @@ async def search_places(
         "X-Goog-FieldMask": (
             "places.id,places.displayName,places.formattedAddress,"
             "places.location,places.rating,places.userRatingCount,"
-            "places.photos,places.primaryType,places.websiteUri"
+            "places.photos,places.primaryType,places.websiteUri,places.priceLevel"
         ),
     }
 
@@ -82,6 +82,17 @@ async def search_places(
                     f"?maxWidthPx=800&key={settings.GOOGLE_CLOUD_API_KEY}"
                 )
 
+        price_level = place.get("priceLevel")
+        price_range = None
+        if price_level == "PRICE_LEVEL_INEXPENSIVE":
+            price_range = "$"
+        elif price_level == "PRICE_LEVEL_MODERATE":
+            price_range = "$$"
+        elif price_level == "PRICE_LEVEL_EXPENSIVE":
+            price_range = "$$$"
+        elif price_level == "PRICE_LEVEL_VERY_EXPENSIVE":
+            price_range = "$$$$"
+
         results.append({
             "venue_id": f"gp_{place.get('id', '')}",
             "name": place.get("displayName", {}).get("text", "Unknown"),
@@ -92,6 +103,7 @@ async def search_places(
             "review_count": int(place.get("userRatingCount", 0)),
             "photos": photo_urls,
             "category": place.get("primaryType", ""),
+            "price_range": price_range,
             "website": place.get("websiteUri", ""),
             "source": "google_places",
         })

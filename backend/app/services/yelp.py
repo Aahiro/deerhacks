@@ -70,6 +70,7 @@ async def search_yelp(
             "review_count": int(biz.get("review_count", 0)),
             "photos": [biz.get("image_url", "")] if biz.get("image_url") else [],
             "category": biz.get("categories", [{}])[0].get("alias", "") if biz.get("categories") else "",
+            "price_range": biz.get("price"),
             "website": biz.get("url", ""),
             "source": "yelp",
         })
