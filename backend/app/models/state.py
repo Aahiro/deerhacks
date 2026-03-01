@@ -29,10 +29,8 @@ class PathfinderState(TypedDict, total=False):
     # ── Vibe Matcher outputs ──
     vibe_scores: dict             # venue_id → score
 
-    # ── Cost & Security ──
-    cost_profiles: dict
-    payment_authorized: bool  # True if CIBA push Auth is complete
-    ciba_auth_req_id: Optional[str]  # Holds the pending Auth0 CIBA request ID
+    # ── Cost ──
+    cost_profiles: dict             # venue_id → {"price_range": "$$", "confidence": "high", "value_score": 0.5}
 
     # ── Critic outputs ──
     risk_flags: dict              # venue_id → [risk strings]

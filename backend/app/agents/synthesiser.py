@@ -37,6 +37,20 @@ Respond with ONLY a valid JSON object (no markdown, no extra text):
 }}
 """
 
+_GLOBAL_CONSENSUS_PROMPT = """You are the PATHFINDER Synthesiser. Given the top ranked venues for a user's query, produce a single comparative summary highlighting the best option based on price consensus, star rating, weather/risks, and vibe.
+
+User's Query: {raw_prompt}
+
+Top Venues Data:
+{venues_data}
+
+Respond with ONLY a valid JSON object (no markdown, no extra text):
+{{
+  "global_consensus": "<2-3 sentence comparative summary>",
+  "email_draft": "<Draft a polite email to the top recommended venue inquiring about group availability, pricing confirmation, and mentioning the group size. Keep it professional.>"
+}}
+"""
+
 
 def _compute_composite_score(
     venue_id: str,
@@ -127,6 +141,39 @@ async def _generate_explanation(
         logger.warning("Synthesis explanation failed for %s: %s", venue.get("name"), exc)
         return {"why": "", "watch_out": ""}
 
+async def _generate_global_consensus(top_venues: list, raw_prompt: str) -> tuple[str, str]:
+    """Use Gemini to generate a global consensus and an email draft comparing top choices."""
+    simplified_venues = []
+    for rank, (composite, venue, vid) in enumerate(top_venues, 1):
+        simplified_venues.append({
+            "rank": rank,
+            "name": venue.get("name"),
+            "score": composite,
+            "traits": venue
+        })
+
+    prompt = _GLOBAL_CONSENSUS_PROMPT.format(
+        raw_prompt=raw_prompt,
+        venues_data=json.dumps(simplified_venues, default=str)
+    )
+
+    try:
+        raw = await generate_content(prompt=prompt, model="gemini-2.5-flash")
+        if not raw:
+            return "Consensus unavailable.", ""
+
+        cleaned = raw.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.split("\n", 1)[-1]
+        if cleaned.endswith("```"):
+            cleaned = cleaned.rsplit("```", 1)[0]
+
+        data = json.loads(cleaned.strip())
+        return data.get("global_consensus", ""), data.get("email_draft", "")
+    except Exception as exc:
+        logger.warning("Global consensus generation failed: %s", exc)
+        return "Based on the options, these venues are the strongest matches.", ""
+
 
 def synthesiser_node(state: PathfinderState) -> PathfinderState:
     """
@@ -204,23 +251,33 @@ def synthesiser_node(state: PathfinderState) -> PathfinderState:
             "lat": venue.get("lat", 0.0),
             "lng": venue.get("lng", 0.0),
             "vibe_score": vibe_entry.get("vibe_score"),
-            "cost_profile": cost_entry if cost_entry else None,
+            "price_range": cost_entry.get("price_range"),
+            "price_confidence": cost_entry.get("confidence", "none"),
             "why": explanation.get("why", ""),
             "watch_out": explanation.get("watch_out", ""),
         })
 
     logger.info("Synthesiser ranked %d venues (top 3 explained)", len(scored))
 
+    # Step 5: Generate Global Consensus
+    try:
+        consensus_text, email_draft = asyncio.run(_generate_global_consensus(top_venues, raw_prompt))
+    except RuntimeError:
+        import nest_asyncio
+        nest_asyncio.apply()
+        consensus_text, email_draft = asyncio.run(_generate_global_consensus(top_venues, raw_prompt))
+
     action_request = None
-    if requires_oauth and allowed_actions:
-        actions_str = ", ".join(allowed_actions).replace("_", " ")
+    if requires_oauth and "send_email" in allowed_actions:
         action_request = {
             "type": "oauth_consent",
-            "reason": f"To execute the planned actions ({actions_str}), PATHFINDER requires your authorization.",
-            "scopes": oauth_scopes
+            "reason": f"To automatically email {top_venues[0][1].get('name', 'the top venue')} for availability.",
+            "scopes": ["email.send"],
+            "draft": email_draft
         }
 
     return {
         "ranked_results": ranked_results,
+        "global_consensus": consensus_text,
         "action_request": action_request
     }

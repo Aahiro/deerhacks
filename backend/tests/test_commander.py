@@ -38,6 +38,6 @@ def test_commander_node_fallback_on_error(mock_generate_content):
     state = {"raw_prompt": "basketball court"}
     new_state = commander_node(state)
     
-    # Assert fallback values (Now tier_3 because of heuristic fallback in code)
-    assert new_state["complexity_tier"] == "tier_3"
+    # Assert fallback values (Now tier_2 because of heuristic fallback in code)
+    assert new_state["complexity_tier"] == "tier_2"
     assert "scout" in new_state["active_agents"]

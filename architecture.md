@@ -123,6 +123,23 @@ A fully weighted execution plan passed into LangGraph, annotated with OAuth requ
 **Responsibilities:**
 - Discovers 5–10 candidate venues based on the Commander's intent.
 - Collects coordinates, ratings, reviews, photos, and category metadata.
+- **NEW: Price Signal Extraction:** Passes through price metadata from discovery APIs.
+  - Google Places `price_level` (0-4) mapped to $–$$$$ symbols.
+  - Yelp Fusion `price` field ("$", "$$", etc.).
+  - If both APIs provide a price, both are passed downstream. If neither, `price_range` is `null`.
+
+**Scout Output Schema:** (per venue)
+```json
+{
+  "venue_id": "gp_abc123",
+  "name": "Example Cafe",
+  "rating": 4.4,
+  "price_range": "$$",
+  "price_source": "google",
+  "lat": 43.65,
+  "lng": -79.38
+}
+```
 
 ---
 
@@ -187,53 +204,47 @@ A normalized Vibe Score per venue + qualitative descriptors.
 
 ---
 
-### Node 4: The COST ANALYST (Financial Node)
+### Node 4: The COST ANALYST (Price Signal Normalizer)
 
 **Status:** ✅ Implemented
-- **3️⃣ Auth0 Secure Actions — Human-in-the-Loop (REVISED):**
-  - **Tier A (Confirmed):** Price found officially. Triggers Auth0 CIBA push notification to authorize payment before LangGraph resumes.
-  - **Tier B (Estimated):** Price inferred. No payment. Prepares a booking inquiry email including Gemini's estimated price, and triggers Auth0 CIBA push notification to authorize sending the email.
-  - **Tier C (Unknown):** No reliable pricing. No payment. Prepares an availability and pricing inquiry email based on the Commander's parsed intent. Triggers Auth0 CIBA push notification to authorize sending the email.
+- **Pricing is informational only:** Displays price tiers but does not trigger transactional OAuth flows. Runs in parallel with Vibe and Critic.
 
-**Role:** "No-surprises" auditor and financial gatekeeper.
-**Model:** Gemini 2.5 Flash
-**Tools:** Firecrawl, Auth0 CIBA
+**Role:** Price Signal Normalizer
+**Model:** None (Heuristic)
+**Tools:** None
 
 **Responsibilities:**
 
-- **Web Scraping Strategy (Firecrawl + Gemini 2.5 Flash):**
-  1. **Semantic Search via Firecrawl `/map`** — Scans the venue's domain utilizing deep semantic search (e.g., matching keywords like "pricing", "rates", "fees", "menu") to discover the most relevant sub-pages.
-  2. **Multi-Page Aggregation** — Scrapes the top 3 pricing-related pages along with the venue's homepage.
-  3. **Holistic LLM Extraction** — Combines scraped markdown and feeds it into **Gemini 2.5 Flash** to extract complex pricing structures.
+- **Price Normalization Strategy:**
+  - Normalize $ / $$ / $$$ / $$$$ values from Scout.
+  - Resolve conflicts between Google and Yelp price tiers.
+  - Assign a confidence label.
 
-- **🔁 Updated Cost Strategy:**
-  - **Pricing is augmentative, not critical-path:** Runs in parallel with Vibe, Access, and Critic. Never blocks final output unless explicitly required.
-  - **Graceful Degradation:** If Firecrawl fails, pricing falls back to Gemini estimation. If both fail, pricing is marked as unknown.
+- **Conflict Resolution Logic:**
+  | Scenario | Outcome |
+  |----------|---------|
+  | Google + Yelp agree | Use value, confidence = high |
+  | Only one source | Use value, confidence = medium |
+  | Conflict | Choose median, confidence = low |
+  | No data | `price_range`: `null`, confidence = none |
 
-- **Confidence-Aware Pricing (NEW):**
-  Every price displayed to the user includes explicit confidence labeling.
-  | Confidence | Meaning | UI Behavior |
-  |-------------|---------|-------------|
-  | `confirmed` | Scraped from official site | Normal display |
-  | `estimated` | LLM inferred | ⚠️ "Estimated" badge |
-  | `unknown` | No reliable signal | Greyed out + warning |
+- **Explicit Constraints:**
+  - Do NOT scrape websites.
+  - Do NOT compute numeric costs.
+  - Do NOT trigger OAuth or payments.
+  - Must run fully in parallel and never block synthesis.
 
 **Output:**
-Cost profiles and recommended facilitation actions (payments or outreach payloads).
+Price profiles containing normalized ranges and confidence labels.
 
 **Structured Output Schema:**
 ```json
 {
-  "cost_profiles": {
+  "price_profiles": {
     "gp_abc123": {
-      "total_cost_of_attendance": 50.00,
-      "per_person": 5.00,
-      "value_score": 0.78,
-      "pricing_confidence": "estimated",
-      "price_source": "gemini_estimate",
-      "notes": "Pricing estimated based on similar venues. Verify before booking.",
-      "recommended_action": "outreach",
-      "outreach_intent": "availability_check"
+      "price_range": "$$",
+      "confidence": "medium",
+      "source": "yelp"
     }
   }
 }
@@ -294,13 +305,14 @@ Risk flags, veto signals, and explicit warnings.
 
 **Status:** ✅ Implemented
 
-**Role:** Final aggregator and explainer. Applies dynamic weights from the Commander to all agent scores, computes composite ranked scores, and generates the human-readable `why`/`watch_out` text for each venue.
+**Role:** Final aggregator and explainer. Applies dynamic weights from the Commander to all agent scores, computes composite ranked scores, and generates the human-readable `summary`, `why`, and `watch_out` text for each venue.
 **Model:** Gemini 1.5 Flash
 
 **Responsibilities:**
 
 - Applies `agent_weights` to vibe, cost, and critic scores → computes a composite ranked score per venue.
 - Runs `asyncio.gather()` with Gemini to generate `why` and `watch_out` text concurrently for all candidates.
+- **Global Consensus:** After scoring, passes the top remaining venues to Gemini to generate a single comparative summary highlighting the best option based on price consensus, star rating, weather/risks, and vibe.
 - **NEW: Chat Reprompting:** Facilitates a conversational loop. If the user provides feedback (e.g., "Do you have more budget-friendly options?"), this node triggers a reprompt back to Node 1 (The Commander) to restart the pipeline with the updated constraints.
 - **NEW: OAuth Interaction Layer:**
   - Detects when an action planned by the Commander requires OAuth approval.
@@ -316,16 +328,19 @@ Risk flags, veto signals, and explicit warnings.
   "ranked_results": [
     {
       "rank": 1,
-      "name": "HoopDome",
-      "address": "123 Court St, Toronto",
+      "name": "Example Cafe",
+      "address": "123 Main St, Toronto",
       "lat": 43.65,
       "lng": -79.38,
+      "rating": 4.4,
+      "price_range": "$$",
+      "price_confidence": "medium",
       "vibe_score": 0.72,
-      "cost_profile": { "per_person": 5.00, "total_cost_of_attendance": 50.00 },
-      "why": "Central location, confirmed $25/hr pricing, and great value for the group.",
-      "watch_out": "No lights — book before 5:30 PM on Saturday."
+      "why": "Affordable pricing with a cozy interior.",
+      "watch_out": "Busy on weekends."
     }
   ],
+  "global_consensus": "Based on the options, Example Cafe offers the best value ($$) and highest rating, avoiding the rain risk of Option B.",
   "action_request": {
     "type": "oauth_consent",
     "reason": "To email the venue on your behalf",
@@ -367,6 +382,11 @@ The Synthesiser collects all node outputs, applies the Commander's dynamic weigh
 - Isochrone overlays for reachability
 - Click interactions: marker or sidebar card → map flies to venue
 
+### Pricing Display (Frontend Contract):
+- Price appears under rating: ⭐ 4.4 $$
+- If `price_range === null`, price row is hidden.
+- No placeholders or inferred pricing.
+
 ---
 
 ## 🔌 API Reference
@@ -395,6 +415,7 @@ Synchronous full-pipeline execution. Blocks until all agents complete.
 ```json
 {
   "venues": [ /* VenueResult[] — see schema below */ ],
+  "global_consensus": "Based on the options, Example Cafe offers the best value ($$) and highest rating.",
   "execution_summary": "Pipeline complete."
 }
 ```
@@ -434,6 +455,7 @@ Node → label mapping:
   "type": "result",
   "data": {
     "venues": [ /* VenueResult[] */ ],
+    "global_consensus": "Based on the options, Example Cafe offers the best value ($$) and highest rating.",
     "execution_summary": "Pipeline complete."
   }
 }
@@ -445,24 +467,23 @@ Node → label mapping:
 ```json
 {
   "rank": 1,
-  "name": "HoopDome",
-  "address": "123 Court St, Toronto",
+  "name": "Example Cafe",
+  "address": "123 Main St, Toronto",
   "lat": 43.65,
   "lng": -79.38,
+  "rating": 4.4,
+  "price_range": "$$",
+  "price_confidence": "medium",
   "vibe_score": 0.72,
-  "cost_profile": {
-    "base_cost": null,
-    "per_person": 5.00,
-    "total_cost_of_attendance": 50.00,
-    "hidden_costs": null,
-    "value_score": 0.78,
-    "pricing_confidence": "estimated",
-    "notes": "Pricing estimated based on similar venues."
-  },
-  "why": "Central location, confirmed $25/hr pricing, and great value for the group.",
-  "watch_out": "No lights — book before 5:30 PM on Saturday."
+  "why": "Affordable pricing with a cozy interior.",
+  "watch_out": "Busy on weekends."
 }
 ```
+
+If no price data exists:
+- `"price_range": null`
+- `"price_confidence": "none"`
+
 
 ---
 
@@ -603,16 +624,7 @@ Knowledge memory and long-term risk logging.
 
 ---
 
-### 4. "Pricing Seems Wrong or Incomplete"
 
-**Symptoms:**
-- Users report unexpected fees.
-
-**Checks:**
-- Verify Firecrawl selectors are still valid.
-- Confirm Cost Analyst is computing Total Cost of Attendance, not just entry price.
-
----
 
 ## 🧠 Model Summary
 
@@ -621,7 +633,7 @@ Knowledge memory and long-term risk logging.
 | Commander | Gemini 1.5 Flash | Intent parsing, complexity tiering, dynamic agent activation & weighting |
 | Scout | Google Places API, Yelp Fusion | Venue discovery and raw metadata collection |
 | Vibe Matcher | Gemini 1.5 Pro (Multimodal) | Aesthetic, photo-based, and sentiment-driven vibe analysis |
-| Cost Analyst | Firecrawl + Gemini | True cost extraction and pricing analysis |
+| Cost Analyst | None (Heuristic) | Price signal normalization |
 | Crowd Analyst *(optional)* | Google Places Reviews, Yelp Reviews | Review aggregation, competitor density, social proof scoring |
 | Critic | Gemini (Adversarial Reasoning) + OpenWeather, PredictHQ | Failure detection, risk forecasting, veto logic |
 | Synthesiser | Gemini 1.5 Flash | Composite score ranking, `why`/`watch_out` generation, final output assembly |
