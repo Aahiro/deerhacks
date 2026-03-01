@@ -88,7 +88,12 @@ async def generate_content(
         candidates = data.get("candidates", [])
         if candidates:
             content = candidates[0].get("content", {})
-            text_parts = content.get("parts", [])
+            # Gemini 2.5 thinking models emit a thought part ({"thought": true})
+            # before the actual response — skip those and take the first real part.
+            text_parts = [
+                p for p in content.get("parts", [])
+                if not p.get("thought", False)
+            ]
             if text_parts:
                 return text_parts[0].get("text", "")
     except httpx.HTTPError as exc:
